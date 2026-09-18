@@ -1,0 +1,32 @@
+{
+  "name": "deskpal",
+  "version": "0.2.0",
+  "description": "桌面宠物：角色扮演 / 书籍陪读 / 时间管理 / 日程提醒",
+  "author": "deskpal",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "postinstall": "node scripts/vendor.js && node scripts/gen-assets.js",
+    "dist": "node scripts/dist.js",
+    "pack": "node scripts/dist.js --dir",
+    "test:fs-guard": "node scripts/test-fs-guard.js",
+    "make-icon": "node scripts/make-icon.js",
+    "make-icons": "electron scripts/gen-icons.js"
+  },
+  "dependencies": {
+    "dayjs": "^1.11.10",
+    "exceljs": "^4.4.0",
+    "iconv-lite": "^0.6.3",
+    "koffi": "^2.8.0",
+    "mammoth": "^1.8.0",
+    "marked": "^12.0.0",
+    "pdfjs-dist": "^3.11.174",
+    "katex": "^0.16.9",
+    "word-extractor": "^1.0.4"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "png-to-ico": "^2.1.8"
+  }
+}

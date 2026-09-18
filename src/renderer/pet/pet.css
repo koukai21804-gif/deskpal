@@ -1,0 +1,86 @@
+/* 宠物窗：透明置顶、SVG 圆球、动画、气泡 */
+html, body { background: transparent; overflow: hidden; }
+body { display: flex; flex-direction: column; }
+
+.dp-stage {
+  flex: 1; display: flex; flex-direction: column; justify-content: flex-end;
+  align-items: center; padding-bottom: 6px; position: relative;
+}
+.dp-sprite {
+  width: 210px; height: 210px; cursor: grab; position: relative; touch-action: none;
+  transform: scale(var(--pet-scale, 1)); transform-origin: bottom center;
+}
+.dp-sprite.dragging { cursor: grabbing; }
+.dp-sprite-img, .dp-sprite-svg { width: 100%; height: 100%; display: block; pointer-events: none; }
+.dp-sprite-img { display: flex; align-items: center; justify-content: center; }
+.dp-sprite-img img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+/* 呼吸 */
+.dp-sprite.breathing .dp-sprite-svg, .dp-sprite.breathing .dp-sprite-img {
+  animation: dp-breathe 3.2s ease-in-out infinite;
+  transform-origin: bottom center;
+}
+@keyframes dp-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.035); } }
+
+/* 表情切换弹跳 */
+.dp-sprite.bounce { animation: dp-bounce 550ms ease; }
+@keyframes dp-bounce { 0% { transform: scale(var(--pet-scale,1)) translateY(0); } 28% { transform: scale(var(--pet-scale,1)) translateY(-14px); } 55% { transform: scale(var(--pet-scale,1)) translateY(0); } 75% { transform: scale(var(--pet-scale,1)) translateY(-6px); } 100% { transform: scale(var(--pet-scale,1)) translateY(0); } }
+
+/* 眨眼（仅 SVG 模式） */
+.dp-sprite.blink .dp-eyes { animation: dp-blink 140ms ease; }
+@keyframes dp-blink { 0% { transform: scaleY(1); } 50% { transform: scaleY(0.08); } 100% { transform: scaleY(1); } }
+.dp-eyes { transform-origin: 100px 88px; }
+
+/* 悲伤泪滴下落 */
+.dp-tear { animation: dp-tear 1.6s ease-in infinite; }
+@keyframes dp-tear { 0% { transform: translateY(0); opacity: .85; } 70% { transform: translateY(14px); opacity: .6; } 100% { transform: translateY(22px); opacity: 0; } }
+
+/* 睡觉 Zzz */
+.dp-sprite.sleeping .dp-zzz { opacity: .8; }
+.dp-sprite.sleeping .dp-zzz text { animation: dp-zzz 2.2s ease-in-out infinite; }
+@keyframes dp-zzz { 0% { opacity: 0; transform: translateY(4px); } 40% { opacity: 1; } 100% { opacity: 0; transform: translateY(-8px); } }
+
+/* ---------- 气泡 ---------- */
+.dp-bubble-host {
+  position: absolute; left: 0; right: 0;
+  bottom: calc(216px * var(--pet-scale, 1) + 8px);
+  display: flex; justify-content: center; pointer-events: none;
+}
+.dp-bubble {
+  pointer-events: auto; max-width: 250px; min-width: 60px;
+  background: var(--dp-panel); color: var(--dp-text);
+  border: 1px solid var(--dp-border); border-radius: 12px;
+  padding: 9px 12px; font-size: 13px; line-height: 1.5;
+  box-shadow: var(--dp-shadow); position: relative;
+  animation: dp-bubble-in .18s ease-out; user-select: none;
+}
+.dp-bubble::after {
+  content: ''; position: absolute; bottom: -7px; left: 50%; margin-left: -7px;
+  width: 12px; height: 12px; background: var(--dp-panel);
+  border-right: 1px solid var(--dp-border); border-bottom: 1px solid var(--dp-border);
+  transform: rotate(45deg);
+}
+@keyframes dp-bubble-in { from { opacity: 0; transform: translateY(6px) scale(.96); } to { opacity: 1; transform: none; } }
+.dp-bubble .b-text { user-select: none; white-space: pre-wrap; }
+
+/* 询问类气泡带按钮 */
+.dp-bubble .b-actions { display: flex; gap: 6px; margin-top: 8px; }
+.dp-bubble .b-actions button {
+  font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--dp-border); background: var(--dp-panel-2); color: var(--dp-text);
+}
+.dp-bubble .b-actions button.primary { background: var(--dp-accent); color: var(--dp-accent-fg); border-color: transparent; }
+
+/* 日程提醒卡 */
+.dp-bubble.schedule-card { max-width: 240px; }
+.dp-bubble.schedule-card .sc-title { font-weight: 700; font-size: 13.5px; margin-bottom: 2px; }
+.dp-bubble.schedule-card .sc-time { font-size: 12px; color: var(--dp-accent); margin-bottom: 8px; }
+.dp-bubble.schedule-card .b-actions { flex-wrap: wrap; }
+
+/* 表情切换调试点（验收用，底部一排小圆点） */
+.dp-emodots { display: none; gap: 6px; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); }
+body.debug .dp-emodots { display: flex; }
+.dp-emodots span {
+  width: 10px; height: 10px; border-radius: 50%; background: var(--dp-border); cursor: pointer;
+}
+.dp-emodots span.active { background: var(--dp-accent); }

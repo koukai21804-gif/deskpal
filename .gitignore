@@ -1,0 +1,18 @@
+# 依赖与构建产物
+node_modules/
+dist/
+*.blockmap
+
+# 运行 / 开发遗留
+dev.log
+*.log
+tmp/
+
+# 编辑器与工具
+.zcode/
+.vscode/
+.idea/
+
+# 系统
+Thumbs.db
+.DS_Store

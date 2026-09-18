@@ -1,0 +1,31 @@
+appId: com.deskpal.app
+productName: deskpal
+directories:
+  output: dist
+  buildResources: resources
+# 复用开发依赖里已下载好的 Electron 构建，避免打包时从 GitHub 重复下载
+electronDist: node_modules/electron/dist
+files:
+  - src/**/*
+  - resources/icon.ico
+  - resources/icon.png
+  - resources/ding.wav
+  - resources/pet/titor/**
+  - package.json
+asar: true
+# koffi 需加载自身目录下的原生 DLL，必须解包出 asar
+asarUnpack:
+  - node_modules/koffi/**
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: resources/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: deskpal
+electronLanguages:
+  - zh-CN
+  - en-US
