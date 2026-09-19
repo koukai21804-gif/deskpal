@@ -130,6 +130,7 @@ spriteEl.addEventListener('dblclick', () => { dp.openWindow('chat'); });
 // ---------- 睡觉 ----------
 function sleep() {
   sleeping = true;
+  if (revertTimer) { clearTimeout(revertTimer); revertTimer = null; } // 清掉挂起的临时表情回退，避免睡觉中被拉回
   spriteEl.classList.add('sleeping');
   spriteEl.classList.remove('breathing');
   bubble.clearAll();
@@ -142,8 +143,13 @@ function wakeUp() {
   sleeping = false;
   spriteEl.classList.remove('sleeping');
   spriteEl.classList.add('breathing');
+  // 睡觉表情是临时借用，不进入状态机：先把回退目标归位平常，
+  // 否则唤醒后的 happy 回退会回到 thinking，看起来像没睡醒
+  emotion = 'normal';
   setEmotion('happy', { source: 'user', revertMs: 4000 });
   bubble.replace({ kind: 'text', text: `呼哇…${petName(persona)}睡得真好！${masterName(persona)}找我什么事？` });
+  // 单击唤醒也要同步清除持久化标记，否则下次启动带着残留的睡觉状态起跳
+  dp.storeSet('settings', { pet: { sleep: false } }).catch(() => {});
 }
 
 // ---------- 提示音 ----------
@@ -208,10 +214,11 @@ async function boot() {
   sprites = await dp.spritesGet();
   document.documentElement.style.setProperty('--pet-scale', settings.pet.scale || 1);
   bubble.setBubbleSeconds(settings.pet.bubbleSeconds || 6);
-  sleeping = !!settings.pet.sleep;
+  // 睡觉是临时状态，不跨启动保留：每次启动都以默认「平常」示人；
+  // 顺手清掉残留的 sleep 标记（上次退出时在睡觉 / 单击唤醒未同步），保持设置与实际一致
+  if (settings.pet.sleep) dp.storeSet('settings', { pet: { sleep: false } }).catch(() => {});
   spriteEl.classList.add('breathing');
   render();
-  if (sleeping) sleep();
   scheduleBlink();
   scheduleIdleAction();
   loadDing();
