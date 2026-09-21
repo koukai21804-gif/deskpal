@@ -16,6 +16,23 @@ function list() {
   }));
 }
 
+// 启用工具 → OpenAI function calling schema（params 描述格式 "string 说明" → JSON Schema）
+function openAiSchemas() {
+  return [...registry.values()].filter(t => t.enabled).map(t => {
+    const properties = {}, required = [];
+    for (const [key, desc] of Object.entries(t.params || {})) {
+      const m = String(desc || '').match(/^\s*(\w+)\s*(.*)$/);
+      const type = m && m[1] === 'string' ? 'string' : 'string';
+      properties[key] = { type, description: (m && m[2] || '').trim() || (key === 'reason' ? '必填：向用户说明本次写入的原因（≤60字）' : key) };
+      if (key === 'reason' || key === 'path' || key === 'content') required.push(key);
+    }
+    return {
+      type: 'function',
+      function: { name: t.name, description: t.desc, parameters: { type: 'object', properties, required } },
+    };
+  });
+}
+
 // 执行入口（供未来 Agent loop 调用）：禁用/越权直接拒绝
 async function invoke(name, args, ctx = {}) {
   const t = registry.get(name);
@@ -24,4 +41,4 @@ async function invoke(name, args, ctx = {}) {
   return t.handler(args || {}, ctx);
 }
 
-module.exports = { register, get, list, invoke };
+module.exports = { register, get, list, openAiSchemas, invoke };

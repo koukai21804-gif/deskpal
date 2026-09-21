@@ -200,7 +200,12 @@ function registerIpc() {
     chat.bumpUserCount(tab);
     return chat.send(tab, String(text).trim());
   });
-  handle('chat:stop', ({ reqId }) => { llm.stop(reqId); return { ok: true }; });
+  handle('chat:stop', ({ reqId }) => {
+    // ★H epoch 打断固定顺序：先停源头（LLM 流）→ 再由 loop 排干下游（世代号/权限/差分收尾）
+    llm.stop(reqId);
+    require('./services/agent/loop').abortRun(reqId);
+    return { ok: true };
+  });
   handle('chat:history', ({ tab }) => chat.getHistory(tab));
   handle('chat:save-history', ({ tab, messages }) => { chat.saveHistory(tab, messages || []); return { ok: true }; });
   handle('chat:export', ({ tab }) => chat.exportChat(tab));
@@ -292,8 +297,15 @@ function registerIpc() {
     return { ok: true };
   });
 
-  // ---------- Agent（预留，未接入聊天） ----------
+  // ---------- Agent（★H：执行管线已接入 roleplay 聊天） ----------
   handle('agent:tools', () => require('./services/agent/builtin').list());
+  handle('agent:permission-resolve', ({ requestId, decision }) => {
+    logger.info(`[agent] 权限裁决点击到达主进程 id=${requestId} decision=${decision}`);
+    const ok = require('./services/agent/permissions').resolveRequest(String(requestId || ''), String(decision || ''));
+    if (!ok) logger.warn(`[agent] 权限裁决未命中挂起请求 id=${requestId}（可能已超时/停止结算）`);
+    return { ok };
+  });
+  handle('agent:runs', ({ limit }) => require('./services/agent/runs').query({ limit: Math.min(100, Math.max(1, +limit || 20)) }));
 
   logger.info('IPC 路由注册完成');
 }

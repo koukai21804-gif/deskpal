@@ -38,6 +38,7 @@ const DEFAULTS = {
     reader: { background: '', petScale: 1, petX: 50, petY: 40, splitPct: 58, dialog: { bg: '', family: '', size: 0, color: '' } },
     activity: { paused: false, idleThresholdSec: 180, windowPollMs: 1000, idlePollMs: 5000 },
     schedule: { leadEvent: 60, leadStart: 5, leadDeadline: 120, snoozeMin: 10, sound: true, systemNotification: true, catchupHours: 24 },
+    agent: { enabled: true, maxRounds: 8, permissionTimeoutSec: 120, permissionMode: 'read' },
   },
   persona: {
     pet: {
@@ -60,6 +61,7 @@ const DEFAULTS = {
   api: {
     endpoint: '', model: '', apiKeyEnc: '',
     params: { temperature: 0.8, maxTokens: 2048, topP: 0.9, frequencyPenalty: 0.3, presencePenalty: 0.3 },
+    toolsStreamBroken: false, // ★H：网关不支持 stream+tools 时置 true，决策轮自动降级非流式
   },
   commands: { commands: [] },
   categories: {
@@ -109,6 +111,8 @@ function init(dir) {
   }
   // 预热全部配置（生成默认文件）
   for (const name of Object.keys(FILE_MAP)) get(name);
+  // 把权限模式同步进 fs-guard（run 启动时还会按最新设置刷新一次）
+  try { guard.setWriteMode(get('settings').agent.permissionMode || 'read'); } catch (_) {}
 }
 
 function get(name) {

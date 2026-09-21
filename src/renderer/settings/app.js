@@ -265,6 +265,8 @@ async function renderTheme() {
 // ================= ④ API =================
 async function renderApi() {
   const api = await dp.storeGet('api');
+  const settings = await dp.storeGet('settings');
+  const agent = settings.agent || { enabled: true, maxRounds: 8, permissionTimeoutSec: 120, permissionMode: 'read' };
   const PRESETS = [
     { name: '自定义', endpoint: '', model: '' },
     { name: 'DeepSeek', endpoint: 'https://api.deepseek.com', model: 'deepseek-chat' },
@@ -304,6 +306,26 @@ async function renderApi() {
       <span class="hint" id="a-test-result"></span>
     </div>
     <p class="hint">聊天、陪读剧情生成、日程解析、时间报告都需要它。Key 使用 Windows 凭据保护（safeStorage）加密存储。</p>
+  </div>
+  <div class="set-section">
+    <h3 style="margin-top:0">🤖 Agent 执行（实验功能）</h3>
+    <p class="hint">在「角色扮演」聊天中执行文件任务：读取 / 列目录 / 写文件。文件权限三档可在聊天窗底部随时切换（此处同步修改）：</p>
+    <div class="field"><span class="label">文件权限模式（对下一次任务生效）</span>
+      <select id="ag-mode" style="max-width:360px">
+        <option value="read" ${agent.permissionMode === 'read' ? 'selected' : ''}>🔒 只读——只能读取和列目录，不写文件</option>
+        <option value="userData" ${agent.permissionMode === 'userData' ? 'selected' : ''}>📝 可编辑——应用数据目录（deskpal 文件夹）及其子目录内可写</option>
+        <option value="full" ${agent.permissionMode === 'full' ? 'selected' : ''}>⚠️ 完全编辑——本机大部分目录可读写（核心系统目录除外，每次写入需批准）</option>
+      </select></div>
+    <div class="field"><span class="label">启用 Agent 文件任务执行</span>
+      <label style="display:flex;gap:6px;align-items:center;font-size:13px">
+        <input type="checkbox" id="ag-enabled" ${agent.enabled ? 'checked' : ''}>
+        允许宠物在聊天中调用工具读写文件
+      </label></div>
+    <div class="field"><span class="label">最大执行轮次（4–16，超出后强制收尾作答）</span>
+      <div class="slider-row"><input type="range" id="ag-rounds" min="4" max="16" step="1" value="${agent.maxRounds}"><span class="val">${agent.maxRounds}</span></div></div>
+    <div class="field"><span class="label">权限卡超时（60–300 秒，超时按拒绝处理）</span>
+      <div class="slider-row"><input type="range" id="ag-timeout" min="60" max="300" step="10" value="${agent.permissionTimeoutSec}"><span class="val">${agent.permissionTimeoutSec}s</span></div></div>
+    <div class="row"><span class="hint" id="ag-saved"></span></div>
   </div>`;
 
   // ---- 模型列表自动获取（类似 CC Switch：填好地址 + Key → 拉取 /models → 下拉选择） ----
@@ -383,6 +405,30 @@ async function renderApi() {
       el.style.color = r.ok ? 'var(--dp-ok)' : 'var(--dp-danger)';
     }
   });
+
+  // ---- Agent 执行区块（即时保存）----
+  const agSaved = body.querySelector('#ag-saved');
+  const agFlash = () => {
+    agSaved.textContent = '✓ 已保存';
+    setTimeout(() => { if (agSaved) agSaved.textContent = ''; }, 1500);
+  };
+  const agEnabled = body.querySelector('#ag-enabled');
+  const agRounds = body.querySelector('#ag-rounds');
+  const agTimeout = body.querySelector('#ag-timeout');
+  const agMode = body.querySelector('#ag-mode');
+  const agentPatch = () => ({
+    enabled: agEnabled.checked,
+    maxRounds: +agRounds.value,
+    permissionTimeoutSec: +agTimeout.value,
+    permissionMode: agMode.value,
+  });
+  const saveAgent = () => dp.storeSet('settings', { agent: agentPatch() }).then(agFlash).catch(err => { agSaved.textContent = '✗ ' + errText(err); });
+  agEnabled.addEventListener('change', saveAgent);
+  agMode.addEventListener('change', saveAgent);
+  for (const r of [agRounds, agTimeout]) {
+    r.addEventListener('input', () => r.closest('.slider-row').querySelector('.val').textContent = r.value + (r === agTimeout ? 's' : ''));
+    r.addEventListener('change', saveAgent);
+  }
 }
 
 // ================= ⑤ 指令 =================

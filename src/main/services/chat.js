@@ -1,4 +1,5 @@
 // 聊天管线：发送/停止/历史/导出/记忆提取（主进程持有权威历史）
+// v0.3：流式正文经 stream-pipeline（节拍+进展剥离）；roleplay 且 agent 开启时接入 agent/loop 执行管线
 const dayjs = require('dayjs');
 const { dialog } = require('electron');
 const fs = require('fs');
@@ -8,6 +9,8 @@ const prompts = require('./prompts');
 const emotion = require('./emotion');
 const logger = require('../logger');
 const windows = require('../windows');
+const { makeStreamPipeline } = require('./stream-pipeline');
+const loop = require('./agent/loop');
 
 const HISTORY_KEY = { roleplay: 'chats/roleplay', quick: 'chats/quick' };
 const MAX_KEEP = 200, CTX_MSGS = 20, CTX_TOKENS = 6400;
@@ -46,7 +49,25 @@ function sendToWin(payload) {
   if (win) win.webContents.send(payload.event, payload.data);
 }
 
-// 发送消息：流式回推 llm:chunk → llm:done（done 内含 parseAndStrip 结果）
+// 最终回复落史（两条路径共用）；msgId 由主进程生成并随 llm:done 带回，
+// 渲染层用它保持本地消息附加数据（时间线/diff 卡）在历史刷新后不丢
+async function finalizeReply(tab, fl) {
+  const h = getHistory(tab);
+  const msgId = 'm' + Date.now().toString(36);
+  h.push({
+    id: msgId, role: 'assistant', content: fl.clean,
+    emotion: fl.emotion || undefined,
+    beats: fl.beats && fl.beats.length ? fl.beats : undefined,
+    schedule: fl.schedule || undefined,
+    at: dayjs().format(),
+  });
+  saveHistory(tab, h);
+  if (fl.emotion && tab === 'roleplay') emotion.broadcastEmotion(fl.emotion, { source: 'chat' });
+  else if (fl.emotion) emotion.broadcastEmotion(fl.emotion, { source: 'chat', revertMs: 6000 });
+  return { msgId };
+}
+
+// 发送消息：流式回推 llm:chunk → llm:done（done 内含管线 flush 结果）
 async function send(tab, text) {
   const reqId = llm.newReqId('chat');
   const history = getHistory(tab);
@@ -56,25 +77,27 @@ async function send(tab, text) {
   const messages = buildMessages(tab, history);
   sendToWin({ event: 'llm:chunk', data: { tab, reqId, delta: '' } }); // 占位开始信号
 
-  // 流式在后台执行，立即返回 reqId 供渲染层停止
+  // roleplay 且 agent 开启 → 工具执行管线；否则普通流式（流式在后台执行，立即返回 reqId 供渲染层停止）
+  const agentOn = tab === 'roleplay' && !!(store.get('settings').agent || {}).enabled;
+  if (agentOn) runAgentTurn(tab, reqId, String(text), messages);
+  else plainTurn(tab, reqId, messages);
+
+  return { reqId };
+}
+
+// 普通流式轮（quick / agent 关闭时的 roleplay）
+function plainTurn(tab, reqId, messages) {
+  const pipeline = makeStreamPipeline(tab, reqId);
   (async () => {
     try {
-      const raw = await llm.streamChat({
-        messages,
-        reqId,
-        onChunk: (delta) => sendToWin({ event: 'llm:chunk', data: { tab, reqId, delta } }),
-      });
-      const { clean, emotion: emo, schedule } = emotion.parseAndStrip(raw);
-      const h = getHistory(tab);
-      h.push({ id: 'm' + Date.now().toString(36), role: 'assistant', content: clean, emotion: emo, schedule: schedule || undefined, at: dayjs().format() });
-      saveHistory(tab, h);
-      if (emo && tab === 'roleplay') emotion.broadcastEmotion(emo, { source: 'chat' });
-      else if (emo) emotion.broadcastEmotion(emo, { source: 'chat', revertMs: 6000 });
-      sendToWin({ event: 'llm:done', data: { tab, reqId, clean, emotion: emo, schedule, aborted: false } });
+      await llm.streamChat({ messages, reqId, onChunk: (delta) => pipeline.onDelta(delta) });
+      const fl = pipeline.flush();
+      const { msgId } = await finalizeReply(tab, fl);
+      sendToWin({ event: 'llm:done', data: { tab, reqId, clean: fl.clean, emotion: fl.emotion, beats: fl.beats, schedule: fl.schedule, aborted: false, msgId } });
       if (tab === 'roleplay') memoryTick().catch(e => logger.warn('记忆提取失败: ' + e.message));
     } catch (e) {
       if (e.name === 'AbortError') {
-        // 停止：保留半截（streamChat 抛出时 onChunk 已推送的部分在渲染层保留）
+        // 停止：保留半截（onChunk 已推送的部分在渲染层保留）
         sendToWin({ event: 'llm:done', data: { tab, reqId, clean: '', emotion: null, schedule: null, aborted: true } });
         return;
       }
@@ -82,8 +105,34 @@ async function send(tab, text) {
       sendToWin({ event: 'llm:error', data: { tab, reqId, error: e.userMsg || e.message } });
     }
   })();
+}
 
-  return { reqId };
+// Agent 执行轮（F9）：loop 负责 tool-call 循环/权限/差分归因/台账，这里只管聊天域收尾
+function runAgentTurn(tab, reqId, instruction, baseMessages) {
+  loop.startRun({
+    reqId, instruction, baseMessages,
+    onFinal: (fl) => finalizeReply(tab, fl),
+    onDone: (p) => {
+      sendToWin({
+        event: 'llm:done',
+        data: {
+          tab, reqId, clean: p.clean, emotion: p.emotion, beats: p.beats, schedule: p.schedule,
+          aborted: false, runId: p.runId, changes: p.changes, msgId: p.msgId,
+        },
+      });
+      memoryTick().catch(e => logger.warn('记忆提取失败: ' + e.message));
+    },
+    onAborted: ({ runId }) => {
+      sendToWin({ event: 'llm:done', data: { tab, reqId, clean: '', emotion: null, schedule: null, aborted: true, runId } });
+    },
+    onError: (e) => {
+      sendToWin({ event: 'llm:error', data: { tab, reqId, error: e.userMsg || e.message } });
+    },
+  }).catch(e => {
+    // startRun 自身异常兜底（loop 内部已 try/catch，这里防御 Promise 层面的意外）
+    logger.error(e);
+    sendToWin({ event: 'llm:error', data: { tab, reqId, error: e.userMsg || e.message } });
+  });
 }
 
 // 记忆系统：距上次提取的用户消息 ≥10 → 低温提取

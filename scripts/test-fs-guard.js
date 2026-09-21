@@ -12,6 +12,7 @@ if (!guard) { console.error('FAIL: 无法加载 fs-guard'); process.exit(1); }
 const tmpUserData = path.join(os.tmpdir(), 'deskpal-fsguard-test-' + Date.now());
 fs.mkdirSync(path.join(tmpUserData, 'temp'), { recursive: true });
 guard.setUserDataDir(tmpUserData);
+guard.setWriteMode('userData'); // v0.3.1 起 canWrite 按权限模式分档，此脚本测 userData 档基准行为
 
 let pass = 0, fail = 0;
 function assert(name, cond) {

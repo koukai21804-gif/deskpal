@@ -1,4 +1,5 @@
-// 内置工具：read_file / list_dir 只读启用；write_file 仅 userData 白名单且禁用态注册
+// 内置工具：read_file / list_dir / write_file（全部经 fs-guard 仲裁）
+// write_file 的用户批准由 loop 的权限闸统一拦截（H1.4）；handler 内 fs-guard 校验保留作双保险。
 const guard = require('../fs-guard');
 const fs = require('fs');
 const path = require('path');
@@ -28,15 +29,22 @@ tools.register({
 
 tools.register({
   name: 'write_file',
-  desc: '写文件（仅允许写入 userData 及其 temp 子目录，当前禁用）',
-  params: { path: 'string 目标绝对路径', content: 'string 内容' },
+  desc: '写文件（可写范围由当前权限模式决定：可编辑=应用数据目录内；完全编辑=本机大部分目录，每次写入需用户批准）',
+  params: {
+    path: 'string 目标绝对路径',
+    content: 'string 完整文件内容（整体覆盖写入）',
+    reason: 'string 必填，≤60字，向用户说明为什么要写这个文件',
+  },
   permission: 'write',
-  enabled: false, // ★Agent 写能力预留，本次不启用
+  enabled: true,
   handler: async (args) => {
-    if (!guard.canWrite(args.path)) throw new Error('写入被拒绝：目标不在允许的目录内');
+    if (!args.reason || !String(args.reason).trim()) {
+      throw new Error('write_file 必须提供 reason 参数（向用户说明写入原因）');
+    }
+    if (!guard.canWrite(args.path)) throw new Error('写入被拒绝：目标不在当前权限模式允许的范围内');
     fs.mkdirSync(path.dirname(args.path), { recursive: true });
     fs.writeFileSync(args.path, String(args.content ?? ''), 'utf8');
-    return 'ok';
+    return '已写入 ' + args.path + '（' + Buffer.byteLength(String(args.content ?? ''), 'utf8') + ' 字节）';
   },
 });
 

@@ -12,6 +12,11 @@ let activity = null;
 
 app.setAppUserModelId('com.deskpal.app'); // Windows 通知必需，第一行
 
+// 测试钩子：隔离 userData（绕开正在运行实例的单实例锁），仅供开发期冒烟/自动化使用
+if (process.env.DESKPAL_USERDATA) {
+  try { app.setPath('userData', process.env.DESKPAL_USERDATA); } catch (_) {}
+}
+
 // 单实例锁
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -30,6 +35,12 @@ if (!gotLock) {
     registerIpc();
     createTray();
     windows.openWindow('pet');
+
+    // ★H agent run 台账恢复：上次未收尾的 run 只标 interrupted，不自动重跑
+    try {
+      const recovered = require('./services/agent/runs').markInterruptedOnBoot();
+      if (recovered.interrupted) logger.info(`agent 台账恢复：${recovered.interrupted} 个 running 记录已标 interrupted`);
+    } catch (e) { logger.error(e); }
 
     // 日程调度器
     try {
@@ -116,6 +127,8 @@ app.on('before-quit', () => {
     if (scheduler) scheduler.stop();
     const tracker = require('./services/activity/tracker');
     tracker.flush();
+    // ★H 退出时未决权限请求全部按拒绝落记录（fail-closed）
+    try { require('./services/agent/permissions').denyAllStopped(); } catch (_) {}
     store.flushAll();
   } catch (e) { logger.error(e); }
 });

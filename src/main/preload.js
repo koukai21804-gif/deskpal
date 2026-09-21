@@ -6,6 +6,7 @@ const PUSH_CHANNELS = [
   'theme:changed', 'settings:changed', 'sprites:changed',
   'pet:emotion', 'pet:bubble', 'pet:sleep', 'pet:ding', 'pet:say',
   'llm:chunk', 'llm:done', 'llm:error',
+  'agent:step', 'agent:permission', 'agent:artifact', 'agent:done',
   'reader:progress', 'reader:qa-chunk', 'reader:qa-done',
   'report:chunk', 'report:done',
   'schedule:remind', 'schedule:catchup', 'schedule:changed', 'schedule:prefill',
@@ -120,6 +121,8 @@ contextBridge.exposeInMainWorld('deskpal', {
   scheduleExcelImport: (tasks) => invoke('schedule:excel-import', { tasks }),
   schedulePrefill: (text) => invoke('schedule:prefill', { text }),
 
-  // Agent（预留）
+  // Agent（★H 执行管线）
   agentTools: () => invoke('agent:tools', {}),
+  agentPermissionResolve: (requestId, decision) => invoke('agent:permission-resolve', { requestId, decision }),
+  agentRuns: (limit) => invoke('agent:runs', { limit }),
 });

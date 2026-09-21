@@ -66,7 +66,9 @@ function httpErrorMessage(status, bodyText) {
 }
 
 // SSE 流式：onChunk(delta, fullSoFar) → 返回完整文本
-async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId('req') }) {
+// opts.withTools：附 OpenAI tools + tool_choice（Agent 决策轮）。返回 {content, toolCalls, finishReason}
+// 而非字符串（不带 withTools 的旧调用方零改动）。
+async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId('req'), withTools = false }) {
   const c = assertConfigured();
   const controller = new AbortController();
   active.set(reqId, controller);
@@ -82,6 +84,15 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
     stream: true,
     ...overrides,
   };
+  if (withTools) {
+    body.tools = overrides.tools;
+    body.tool_choice = 'auto';
+    // 决策轮不需要推理；deepseek 系思考 token 计入 max_tokens，会挤占工具调用（H1.8）
+    if (isDeepseek(c.model)) body.thinking = { type: 'disabled' };
+  }
+  // 工具调用增量累计：index -> {id, name, args}（arguments 字符串跨 chunk 拼接）
+  const toolAcc = [];
+  let finishReason = null;
   try {
     const res = await fetch(normalizeEndpoint(c.endpoint), {
       method: 'POST',
@@ -91,6 +102,13 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
     });
     if (!res.ok) {
       const t = await res.text().catch(() => '');
+      // 兼容降级：部分网关不支持 stream+tools（400）→ 记标记，此后决策轮走非流式
+      if (withTools && res.status === 400) {
+        store.set('api', { toolsStreamBroken: true });
+        const e = friendlyError('当前接口不支持流式工具调用，已自动切换为非流式决策轮');
+        e.toolsStreamBroken = true;
+        throw e;
+      }
       throw friendlyError(httpErrorMessage(res.status, t));
     }
     const reader = res.body.getReader();
@@ -109,12 +127,31 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
         if (data === '[DONE]') continue;
         try {
           const j = JSON.parse(data);
-          const delta = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
-          if (delta) { full += delta; if (onChunk) onChunk(delta, full); }
+          const choice = j.choices && j.choices[0];
+          if (!choice) continue;
+          if (choice.finish_reason) finishReason = choice.finish_reason;
+          const delta = choice.delta || {};
+          if (delta.content) { full += delta.content; if (onChunk) onChunk(delta.content, full); }
+          if (withTools && Array.isArray(delta.tool_calls)) {
+            for (const tc of delta.tool_calls) {
+              const idx = Number.isFinite(tc.index) ? tc.index : 0;
+              const slot = toolAcc[idx] || (toolAcc[idx] = { id: '', name: '', args: '' });
+              if (tc.id) slot.id += tc.id;
+              if (tc.function && tc.function.name) slot.name += tc.function.name;
+              if (tc.function && tc.function.arguments) slot.args += tc.function.arguments;
+            }
+          }
         } catch (_) { /* 跳过不完整行 */ }
       }
     }
-    return full;
+    if (!withTools) return full;
+    const calls = toolAcc.filter(Boolean);
+    return {
+      content: full,
+      toolCalls: calls.map(t => ({ id: t.id, name: t.name, argsRaw: t.args })),
+      // 个别网关流末不带 finish_reason：按是否累计出工具调用推断
+      finishReason: finishReason || (calls.length ? 'tool_calls' : 'stop'),
+    };
   } finally {
     active.delete(reqId);
   }
@@ -126,9 +163,11 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
 function isDeepseek(model) { return /deepseek/i.test(String(model || '')); }
 
 // 非流式：记忆提取 / 日程解析 / 大纲等内部任务
-async function genericCompletion(messages, { temperature = 0.3, maxTokens = 1024 } = {}) {
+// opts.tools：附工具定义（Agent 非流式决策轮），返回 {content, toolCalls, finishReason}
+async function genericCompletion(messages, { temperature = 0.3, maxTokens = 1024, tools = null } = {}) {
   const c = assertConfigured();
   const body = { model: c.model, messages, temperature, max_tokens: maxTokens, stream: false };
+  if (tools) { body.tools = tools; body.tool_choice = 'auto'; }
   if (isDeepseek(c.model)) body.thinking = { type: 'disabled' };
   const res = await fetch(normalizeEndpoint(c.endpoint), {
     method: 'POST',
@@ -142,7 +181,15 @@ async function genericCompletion(messages, { temperature = 0.3, maxTokens = 1024
   const j = await res.json();
   const msg = (j.choices && j.choices[0] && j.choices[0].message) || {};
   // 思考型模型可能把内容放在 reasoning_content（content 被截断为空时兜底）
-  return String(msg.content || '') || String(msg.reasoning_content || '');
+  const content = String(msg.content || '') || String(msg.reasoning_content || '');
+  if (!tools) return content;
+  return {
+    content,
+    toolCalls: (msg.tool_calls || []).map(t => ({
+      id: t.id, name: t.function && t.function.name, argsRaw: (t.function && t.function.arguments) || '',
+    })),
+    finishReason: (j.choices && j.choices[0] && j.choices[0].finish_reason) || 'stop',
+  };
 }
 
 // 拉取 OpenAI 兼容模型列表（GET {base}/models），供设置页下拉选择
@@ -193,4 +240,7 @@ function friendlyError(msg) {
   return e;
 }
 
-module.exports = { streamChat, genericCompletion, testConnection, listModels, stop, newReqId, getConfig, saveKey, assertConfigured, normalizeEndpoint };
+// stream+tools 是否已被 400 判定不可用（决策轮据此降级非流式）
+function isToolsStreamBroken() { return !!store.get('api').toolsStreamBroken; }
+
+module.exports = { streamChat, genericCompletion, testConnection, listModels, stop, newReqId, getConfig, saveKey, assertConfigured, normalizeEndpoint, isToolsStreamBroken };

@@ -25,9 +25,44 @@ function memoriesBlock() {
 }
 
 // ================= 聊天：角色扮演 =================
+// agent 段（任务执行模式 + 进展契约）与节拍协议升级（H1.9/H2.1）
+// mode：read=只读 / userData=数据目录内可写 / full=大部分目录可写（逐次批准）
+function agentSection() {
+  const mode = (() => {
+    const m = (store.get('settings').agent || {}).permissionMode;
+    return ['read', 'userData', 'full'].includes(m) ? m : 'read';
+  })();
+  const dataDir = store.getDataDir() || '';
+  const dirLine = dataDir ? `\n本应用的数据目录（userData）：${dataDir}\n用户说「数据目录」「应用数据目录」时就是指这个路径，直接用它的绝对路径调用工具，不要探测、不要猜测。` : '';
+  const modeLine = {
+    read: `\n当前权限模式：只读——没有写文件工具。若用户要求写文件，告知需在聊天窗底部把权限切换为「可编辑」或「完全编辑」。`,
+    userData: `\n当前权限模式：可编辑——write_file 仅允许写入本应用的数据目录（上面给出的路径）及其全部子目录，无需逐次确认，直接执行。`,
+    full: `\n当前权限模式：完全编辑——write_file 可写入本机大部分目录（Windows、Program Files 等核心系统目录、其他用户目录、敏感文件除外）；每次写入前用户会在权限卡上逐次批准，被拒后调整方案，不要重复尝试同一目标。`,
+  }[mode];
+  const writeTool = mode === 'read' ? '' : '\n- write_file(path, content, reason)：写文件（reason 必填，≤60字，向用户说明写入原因）';
+  return `
+【任务执行模式（仅当用户明确要求读写文件、生成文件到某处、整理某目录时使用；普通聊天禁用）】
+你可以调用以下工具实际执行文件任务：
+- read_file(path)：读取文本文件（敏感路径会被拒绝）
+- list_dir(path)：列出目录内容${writeTool}${dirLine}${modeLine}
+执行任务的过程中，在正文里用单行进展标记汇报关键节点（读出来，不要念标记本身）：
+[进展:设计] <决定了什么、为什么>      [进展:发现] <观察到什么意外事实、影响与对策>
+[进展:能力] <现在完成了什么可交付的东西> [进展:验证] <检查了什么、结果、发现的问题>
+每条 ≤40 字；普通聊天不使用；不要把标记写进工具参数。
+用户没有指定文件内容时，生成合理、可直接使用的默认内容即可，不要为此追问。`;
+}
+
+function beatSection() {
+  return `
+3. 表情节拍：正文中可以在你所修饰句子的句末穿插短标签 [开心]/[思考]/[惊讶]/[愤怒]/[悲伤]/[平常]（与口头禅同格式）。
+   每句最多 1 个；只在情绪发生变化时打标签（连续同情绪可省略，避免表情频繁闪烁）；3 句以上的回复至少 1 个节拍。
+   末行 [情绪:XX] 仍必须附（兜底）。`;
+}
+
 function roleplaySystem() {
   const p = persona();
   const pet = p.pet, user = p.user;
+  const agentOn = !!(store.get('settings').agent || {}).enabled;
   return `你是${pet.name}，一只生活在用户电脑桌面上的桌面宠物。${pet.tagline || ''}
 ${section('角色设定', [
   line('外貌', pet.appearance), line('性格', pet.personality), line('说话风格', pet.speechStyle),
@@ -53,7 +88,7 @@ ${memoriesBlock()}
 2. 如果用户在对话中明确说出了未来的安排（约会、会议、赶工、缴截止时间等），且时间明确或可以可靠推断，在情绪标签的上一行附加日程标签：
 [日程:{"title":"简短标题","kind":"event或task","start":"YYYY-MM-DD HH:mm","durationMin":数字或null,"remindPreset":"event/start/deadline/none"}]
    kind：约会/会议/外出等日历安排=event，有开始或截止的工作任务=task；remindPreset 按类型选 event/start/deadline，无法判断用 none。
-   时间一律换算成绝对时间。只有意图明确、时间可确定才附加；拿不准就不附，绝不编造时间，也不要为了附标签而改变聊天语气。
+   时间一律换算成绝对时间。只有意图明确、时间可确定才附加；拿不准就不附，绝不编造时间，也不要为了附标签而改变聊天语气。${beatSection()}${agentOn ? agentSection() : ''}
 ${pet.customPrompt ? `\n【自定义指令】\n${pet.customPrompt}` : ''}`;
 }
 
@@ -70,7 +105,8 @@ function quickSystem() {
 - 能短则短；需要展开时用 markdown 列表/小标题/代码块
 - 涉及文件路径、命令、代码时给出可直接复制使用的完整内容
 
-每条回复最后一行仍必须单独附 [情绪:XX] 标签（平常/开心/惊讶/愤怒/思考/悲伤）。`;
+每条回复最后一行仍必须单独附 [情绪:XX] 标签（平常/开心/惊讶/愤怒/思考/悲伤）。
+正文中也可以在所修饰句子的句末穿插短标签 [开心]/[思考] 等（每句最多1个，只在情绪变化时使用）；速问以信息准确优先，节拍可有可无。`;
 }
 
 // ================= 记忆提取（soulchat 原文） =================
