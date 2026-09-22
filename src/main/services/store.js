@@ -38,7 +38,7 @@ const DEFAULTS = {
     reader: { background: '', petScale: 1, petX: 50, petY: 40, splitPct: 58, dialog: { bg: '', family: '', size: 0, color: '' } },
     activity: { paused: false, idleThresholdSec: 180, windowPollMs: 1000, idlePollMs: 5000 },
     schedule: { leadEvent: 60, leadStart: 5, leadDeadline: 120, snoozeMin: 10, sound: true, systemNotification: true, catchupHours: 24 },
-    agent: { enabled: true, maxRounds: 8, permissionTimeoutSec: 120, permissionMode: 'read' },
+    agent: { enabled: true, maxRounds: 8, permissionTimeoutSec: 120, permissionMode: 'read', toolMaxTokens: 8192 },
   },
   persona: {
     pet: {

@@ -11,11 +11,12 @@
   "activity": { "paused": false, "idleThresholdSec": 180, "windowPollMs": 1000, "idlePollMs": 5000 },
   "schedule": { "leadEvent": 60, "leadStart": 5, "leadDeadline": 120, "snoozeMin": 10,
                 "sound": true, "systemNotification": true, "catchupHours": 24 },
-  "agent": { "enabled": true, "maxRounds": 8, "permissionTimeoutSec": 120, "permissionMode": "read|userData|full" }
+  "agent": { "enabled": true, "maxRounds": 8, "permissionTimeoutSec": 120, "permissionMode": "read|userData|full", "toolMaxTokens": 8192 }
 }
 ```
 `agent`（★H as-built）：Agent 执行总开关 / 最大决策轮次（clamp 4–16）/ 权限卡超时秒（clamp 60–300，超时按拒绝）/ **文件权限三档**：
 `read`=只读（write 工具不下发，幻觉调用兜底拦截）；`userData`=可编辑（数据目录子树直写，无逐次卡）；`full`=完全编辑（本机大部分目录可写——核心系统目录/其他用户目录/敏感文件/盘根文件/UNC 除外，逐次权限卡）。默认 `read`。聊天窗输入区与设置页 API tab 均可切换（对下一次任务生效）。
+`toolMaxTokens`（★0.3.1）：带工具决策轮的输出上限（clamp 2048–65536，默认 8192，设置页可调）——write_file 参数内嵌全文，须大于聊天 max_tokens，否则工具调用会被截断作废（见 08 差异 17）。
 
 ## config/persona.json
 `pet`: name/tagline/appearance/personality/speechStyle/catchphrases/background/emotionalPatterns/taboos/thinkingLogic/customPrompt/language；`user`: name/description。全部可空（prompt 组装时省略）。

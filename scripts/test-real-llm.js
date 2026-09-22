@@ -73,6 +73,8 @@ app.whenReady().then(async () => {
     const llm = require(path.join(__dirname, '..', 'src/main/services/llm'));
     llm.saveKey(key);
     store.set('api', { endpoint: realApi.endpoint, model: realApi.model, params: realApi.params || {} });
+    // 三档权限默认 read（write 工具不下发）；写链路用例需 full（权限卡由下方桩自动裁决）
+    store.set('settings', { agent: { permissionMode: 'full' } });
     store.flushAll();
 
     const prompts = require(path.join(__dirname, '..', 'src/main/services/prompts'));

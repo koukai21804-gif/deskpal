@@ -19,7 +19,18 @@ const { makeStreamPipeline } = require('../stream-pipeline');
 const CAP_MSG = '已达执行轮次上限。请不要再调用工具，基于现有结果直接给出最终答复。';
 const FAKE_DONE_MSG = '上一轮你没有调用任何工具就声称完成了任务。若任务确需读写文件，请调用工具执行；若确实无需工具，直接给出最终答复。';
 const DENY_BREAK_MSG = '用户已两次拒绝同一写入目标，停止再次尝试该目标。';
+const LENGTH_MSG = '上一轮输出因达到 max_tokens 上限被截断，末尾的工具调用没有执行、任务未完成。请重新来：正文从简（≤100字），直接调用工具；写入大文件必须分段——先 write_file 写第一段（≤3000字），后续各段用参数 append:"true" 追加。';
+const CLAIM_MSG = '上一轮你声称已写入文件，但本次任务没有任何成功的 write_file 调用，该文件实际并不存在。请立即实际调用 write_file 完成写入（大文件分段：先写第一段，再以 append:"true" 逐段追加）；若确实无法写入，必须如实告知用户并说明原因，绝不允许声称已写入未写入的文件。';
 const PROG_COUNT_RE = /\[进展[:：]\s*(?:设计|发现|能力|验证)/g;
+
+// 「声称已写入」检测：完成态标记（已/已经/…了）+ 写入动词，且上下文有文件线索（扩展名/文件/文档/写入/数据目录）。
+// 文件线索可挡掉角色扮演剧情里的虚构表述（如「把信写好了」）误触发。
+const WRITE_CLAIM_RE = /(已经|已)[^\n。！？]{0,16}(写入|写好|保存|建好|创建|生成|写进|存进|存到|写到)|(写入|写好|保存|建好|创建|生成)了[^\n。！？]{0,8}(文件|文档|\.md|\.txt|\.json)/;
+const FILE_HINT_RE = /\.(md|txt|json|csv|log|ya?ml|html?|js|ts|py|docx?|xlsx?|pptx?)\b|写入|文件|文档|数据目录/;
+function claimsWrite(text) {
+  const t = String(text || '');
+  return WRITE_CLAIM_RE.test(t) && FILE_HINT_RE.test(t);
+}
 
 const activeRuns = new Map(); // reqId -> abort()
 
@@ -46,11 +57,13 @@ async function startRun(opts) {
   const agentCfg = store.get('settings').agent || {};
   const maxRounds = clampNum(agentCfg.maxRounds, 4, 16, 8);
   const permTimeout = clampNum(agentCfg.permissionTimeoutSec, 60, 300, 120);
+  // 工具轮输出上限：write_file 的参数内嵌整个文件内容，远超普通聊天回复，
+  // 沿用聊天 max_tokens 会在工具参数中途截断（finishReason=length、调用作废）
+  const toolMaxTokens = clampNum(agentCfg.toolMaxTokens, 2048, 65536, 8192);
   // ★权限模式（聊天窗/设置页三档）：read=只读（write 工具不下发）；userData=数据目录内直写；full=大范围+逐次权限卡
   const mode = ['read', 'userData', 'full'].includes(agentCfg.permissionMode) ? agentCfg.permissionMode : 'read';
   guard.setWriteMode(mode);
   const schemas = tools.openAiSchemas().filter(s => !(mode === 'read' && s.function.name === 'write_file'));
-  const maxTokens = (store.get('api').params || {}).maxTokens || 4096;
 
   const runId = runs.newRunId();
   const record = {
@@ -71,7 +84,7 @@ async function startRun(opts) {
 
   let tracer = null;
   let executedTools = 0, executedWrites = 0, writeDenials = 0, progressSeen = 0;
-  let firstRoundRequestedTools = false, retries = 0;
+  let firstRoundRequestedTools = false, retries = 0, lengthRetries = 0;
   const denyStreak = new Map(); // 归一化路径 -> 连续拒绝次数
 
   const pushArtifact = (changed) => push('agent:artifact', { tab: 'roleplay', reqId: o.reqId, changed });
@@ -113,14 +126,14 @@ async function startRun(opts) {
       try {
         return await llm.streamChat({
           messages: msgs, reqId: o.reqId, withTools: true,
-          overrides: { tools: schemas }, onChunk: onDelta,
+          overrides: { tools: schemas, max_tokens: toolMaxTokens }, onChunk: onDelta,
         });
       } catch (e) {
         if (!e.toolsStreamBroken) throw e; // 400 已判定：本 run 起决策轮走非流式
         logger.info('接口不支持 stream+tools，决策轮降级为非流式');
       }
     }
-    const res = await llm.genericCompletion(msgs, { tools: schemas, maxTokens });
+    const res = await llm.genericCompletion(msgs, { tools: schemas, maxTokens: toolMaxTokens });
     if (res.content) onDelta(res.content);
     return res;
   }
@@ -157,15 +170,16 @@ async function startRun(opts) {
       // full 模式才走逐次权限卡；userData 模式 = 用户已通过模式选择授权数据目录内写入
       if (mode === 'full') {
         const bytes = Buffer.byteLength(String(args.content ?? ''), 'utf8');
+        const isAppend = args.append === true || String(args.append).toLowerCase() === 'true';
         let exists = false;
         try { exists = fs.existsSync(args.path); } catch (_) {}
         const pr = await permissions.request({
           runId, reqId: o.reqId, tool: tc.name,
-          action: exists ? '覆盖文件' : '新建文件',
+          action: exists ? (isAppend ? '追加文件' : '覆盖文件') : '新建文件',
           scopePaths: [args.path],
-          detail: `${path.basename(String(args.path))}，${bytes} 字节，${exists ? '覆盖已有文件' : '新建'}`,
+          detail: `${path.basename(String(args.path))}，${bytes} 字节，${exists ? (isAppend ? '追加到已有文件末尾' : '覆盖已有文件') : '新建'}`,
           reason: args.reason,
-          reversibility: exists ? '覆盖已有文件（原内容不自动保留，diff 卡可见）' : 'temp 内新建（可删）',
+          reversibility: exists ? (isAppend ? '在已有文件末尾追加（diff 卡可见）' : '覆盖已有文件（原内容不自动保留，diff 卡可见）') : 'temp 内新建（可删）',
           timeoutSec: permTimeout,
         });
         if (isStale()) return { ok: false, content: '' }; // abort 路径已收尾，上层检查后静默退出
@@ -209,6 +223,11 @@ async function startRun(opts) {
       record.changed = changes;
       pushArtifact(changes);
     }
+    // 幻觉兜底：重试预算耗尽后正文仍声称已写入，而本 run 零成功写入零变更 →
+    // 附加系统核实说明一起存史/送达，绝不让「假完成」单独流向用户
+    if (mode !== 'read' && executedWrites === 0 && changes.length === 0 && claimsWrite(fl.clean)) {
+      fl.clean += '\n\n（系统核实：本次任务没有实际写入任何文件，上文关于已写入的表述与事实不符。）';
+    }
     const extra = await o.onFinal(fl);
     record.finalReply = fl.clean;
     // 全部写尝试均被拒且无任何成功写入 → denied；否则 done
@@ -238,14 +257,28 @@ async function startRun(opts) {
       if (rounds === 1 && wantsTools) firstRoundRequestedTools = true;
 
       if (!wantsTools) {
+        // 截断轮：工具仍可用时 finishReason=length = 输出被 max_tokens 腰斩（工具调用多半只发了一半）。
+        // 这轮正文是任务中途叙述而非最终答复（实测出现过「我把文档写进数据目录根」后调用作废、
+        // 用户被误导以为已写入）——丢弃重出，有界 2 次。
+        if (res.finishReason === 'length' && !overCap && lengthRetries < 2) {
+          lengthRetries++;
+          record.lengthRetries = lengthRetries;
+          step({ kind: 'notice', notice: 'length_retry', text: `输出被 max_tokens 截断，工具调用未执行，重试（${lengthRetries}/2）` });
+          pipeline.reset();
+          toolTurns.push({ role: 'assistant', content: res.content || '' }, { role: 'system', content: LENGTH_MSG });
+          continue;
+        }
+
         // 假完成检测：任务型判定（首轮请求过工具或正文含进展标记）却零工具执行 → 一次有界重试。
-        // 写入曾被用户拒绝的情况不算假完成（用户已介入，模型知情），避免无意义重试。
+        // 声称已写入检测：正文声称完成写入但零成功写入（含只跑过读工具的情况）→ 共用同一次重试预算。
+        // 写入曾被用户拒绝的情况不算（用户已介入，模型知情），避免无意义重试。
         const taskLike = firstRoundRequestedTools || progressSeen > 0;
-        if (taskLike && executedTools === 0 && writeDenials === 0 && retries === 0 && !overCap) {
+        const fakeClaim = mode !== 'read' && executedWrites === 0 && claimsWrite(res.content);
+        if (((taskLike && executedTools === 0) || fakeClaim) && writeDenials === 0 && retries === 0 && !overCap) {
           retries = 1; record.retries = 1;
-          step({ kind: 'notice', notice: 'retry', text: '检测到未执行工具即声称完成，自动重试一轮（1/1）' });
+          step({ kind: 'notice', notice: 'retry', text: fakeClaim ? '检测到声称已写入但没有成功写入记录，自动重试一轮（1/1）' : '检测到未执行工具即声称完成，自动重试一轮（1/1）' });
           pipeline.reset(); // 管线与渲染层正文同步清空，重试轮从零开始
-          toolTurns.push({ role: 'assistant', content: res.content || '' }, { role: 'system', content: FAKE_DONE_MSG });
+          toolTurns.push({ role: 'assistant', content: res.content || '' }, { role: 'system', content: fakeClaim ? CLAIM_MSG : FAKE_DONE_MSG });
           continue;
         }
         return await finishRun(res.content);

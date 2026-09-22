@@ -266,7 +266,7 @@ async function renderTheme() {
 async function renderApi() {
   const api = await dp.storeGet('api');
   const settings = await dp.storeGet('settings');
-  const agent = settings.agent || { enabled: true, maxRounds: 8, permissionTimeoutSec: 120, permissionMode: 'read' };
+  const agent = settings.agent || { enabled: true, maxRounds: 8, permissionTimeoutSec: 120, permissionMode: 'read', toolMaxTokens: 8192 };
   const PRESETS = [
     { name: '自定义', endpoint: '', model: '' },
     { name: 'DeepSeek', endpoint: 'https://api.deepseek.com', model: 'deepseek-chat' },
@@ -325,6 +325,8 @@ async function renderApi() {
       <div class="slider-row"><input type="range" id="ag-rounds" min="4" max="16" step="1" value="${agent.maxRounds}"><span class="val">${agent.maxRounds}</span></div></div>
     <div class="field"><span class="label">权限卡超时（60–300 秒，超时按拒绝处理）</span>
       <div class="slider-row"><input type="range" id="ag-timeout" min="60" max="300" step="10" value="${agent.permissionTimeoutSec}"><span class="val">${agent.permissionTimeoutSec}s</span></div></div>
+    <div class="field"><span class="label">工具轮输出上限（2048–65536 tokens。写文件时工具参数内嵌全文，需比聊天「最大 tokens」大；接口报 max_tokens 超限时调小此项）</span>
+      <div class="slider-row"><input type="range" id="ag-tooltokens" min="2048" max="65536" step="1024" value="${agent.toolMaxTokens ?? 8192}"><span class="val">${agent.toolMaxTokens ?? 8192}</span></div></div>
     <div class="row"><span class="hint" id="ag-saved"></span></div>
   </div>`;
 
@@ -415,17 +417,19 @@ async function renderApi() {
   const agEnabled = body.querySelector('#ag-enabled');
   const agRounds = body.querySelector('#ag-rounds');
   const agTimeout = body.querySelector('#ag-timeout');
+  const agToolTokens = body.querySelector('#ag-tooltokens');
   const agMode = body.querySelector('#ag-mode');
   const agentPatch = () => ({
     enabled: agEnabled.checked,
     maxRounds: +agRounds.value,
     permissionTimeoutSec: +agTimeout.value,
     permissionMode: agMode.value,
+    toolMaxTokens: +agToolTokens.value,
   });
   const saveAgent = () => dp.storeSet('settings', { agent: agentPatch() }).then(agFlash).catch(err => { agSaved.textContent = '✗ ' + errText(err); });
   agEnabled.addEventListener('change', saveAgent);
   agMode.addEventListener('change', saveAgent);
-  for (const r of [agRounds, agTimeout]) {
+  for (const r of [agRounds, agTimeout, agToolTokens]) {
     r.addEventListener('input', () => r.closest('.slider-row').querySelector('.val').textContent = r.value + (r === agTimeout ? 's' : ''));
     r.addEventListener('change', saveAgent);
   }

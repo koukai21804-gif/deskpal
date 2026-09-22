@@ -39,7 +39,7 @@ function agentSection() {
     userData: `\n当前权限模式：可编辑——write_file 仅允许写入本应用的数据目录（上面给出的路径）及其全部子目录，无需逐次确认，直接执行。`,
     full: `\n当前权限模式：完全编辑——write_file 可写入本机大部分目录（Windows、Program Files 等核心系统目录、其他用户目录、敏感文件除外）；每次写入前用户会在权限卡上逐次批准，被拒后调整方案，不要重复尝试同一目标。`,
   }[mode];
-  const writeTool = mode === 'read' ? '' : '\n- write_file(path, content, reason)：写文件（reason 必填，≤60字，向用户说明写入原因）';
+  const writeTool = mode === 'read' ? '' : '\n- write_file(path, content, reason)：写文件（reason 必填，≤60字，向用户说明写入原因）。大文件必须分段写：先写第一段，再用 write_file(path, content, reason, append:"true") 逐段追加，每段 ≤3000 字';
   return `
 【任务执行模式（仅当用户明确要求读写文件、生成文件到某处、整理某目录时使用；普通聊天禁用）】
 你可以调用以下工具实际执行文件任务：

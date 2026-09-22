@@ -460,8 +460,8 @@ dp.on('agent:step', (d) => {
   if (!streaming || streaming.tab !== d.tab) return;
   if (streaming.reqId && d.reqId !== streaming.reqId) return;
   streaming.steps.push(d);
-  // 假完成重试：主进程管线已重置，本地正文同步清空
-  if (d.kind === 'notice' && d.notice === 'retry') {
+  // 假完成重试 / 截断重试：主进程管线已重置，本地正文同步清空
+  if (d.kind === 'notice') {
     streaming.raw = '';
     const body = streaming.el.querySelector('.body');
     body.innerHTML = '<span class="streaming-cursor"></span>';

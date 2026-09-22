@@ -1,6 +1,6 @@
 {
   "name": "deskpal",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "桌面宠物：角色扮演 / 书籍陪读 / 时间管理 / 日程提醒 / Agent 执行管线",
   "author": "deskpal",
   "main": "src/main/main.js",

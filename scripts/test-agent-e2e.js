@@ -38,8 +38,8 @@ const permissions = require(SVC('agent/permissions'));
 // 每个用例配置一次 LLM 行为脚本（按调用序出牌）
 let llmScript = [];
 let llmCalls = [];
-llm.streamChat = async ({ messages, onChunk, withTools }) => {
-  llmCalls.push({ kind: 'stream', withTools, messages });
+llm.streamChat = async ({ messages, onChunk, withTools, overrides }) => {
+  llmCalls.push({ kind: 'stream', withTools, overrides, messages });
   const turn = llmScript.shift() || { content: '（空）', toolCalls: [], finishReason: 'stop' };
   // 逐小片喂正文（含跨 chunk 半截标记/标签），驱动剥离器状态机
   for (const piece of splitPieces(turn.content || '')) {
@@ -317,6 +317,84 @@ section('用例 7b：read 模式——write 工具不下发 + 兜底拦截');
   ok(!fs.existsSync(target), 'read 模式无文件产生');
   const toolMsg = llmCalls[1] && llmCalls[1].messages.find(m => m.role === 'tool');
   ok(toolMsg && toolMsg.content.includes('只读'), '模型收到只读模式说明');
+  store.set('settings', { agent: { permissionMode: 'full' } }); // 还原
+}
+
+// ============ 用例 8：write_file 被 max_tokens 截断（复现实测 run 16）→ 截断重试 + 分段写入 ============
+section('用例 8：finishReason=length 截断重试与分段写入');
+{
+  store.set('settings', { agent: { permissionMode: 'userData' } }); // 数据目录直写，聚焦截断逻辑
+  const doc = path.join(TMP, 'TOH-doc.md');
+  llmScript = [
+    { content: '先看一眼目录。', toolCalls: [{ id: 'c1', name: 'list_dir', argsRaw: JSON.stringify({ path: TMP }) }], finishReason: 'tool_calls' },
+    // 复现实测：叙述「我把文档写进数据目录根」+ write_file 参数超长被 max_tokens 腰斩
+    { content: '我把文档写进数据目录根，命名 TOH-doc.md。内容按 front-matter → 背景 → TODO 组织。', finishReason: 'length' },
+    { content: '分段写。', toolCalls: [{ id: 'c2', name: 'write_file', argsRaw: JSON.stringify({ path: doc, content: '# part1\n', reason: '文档第一段' }) }], finishReason: 'tool_calls' },
+    { content: '续段。', toolCalls: [{ id: 'c3', name: 'write_file', argsRaw: JSON.stringify({ path: doc, content: '# part2\n', reason: '文档第二段追加', append: 'true' }) }], finishReason: 'tool_calls' },
+    { content: '两段都写进去了，任务完成。[情绪:开心]', finishReason: 'stop' },
+  ];
+  permDecision = 'allow_once';
+  llmCalls = [];
+  await loop.startRun({
+    reqId: 'chat_e2e_8', instruction: '写 TOH 迭代文档', baseMessages: baseMsgs(),
+    onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '8 不应 error: ' + e.message); },
+  });
+  ok(fs.existsSync(doc) && fs.readFileSync(doc, 'utf8') === '# part1\n# part2\n', '截断重试后真实写入（覆盖+append 追加）');
+  ok(llmCalls.length === 5, `共 5 轮调用（读目录+截断+重试写两段+收尾），got ${llmCalls.length}`);
+  ok(llmCalls[1].kind === 'stream' && llmCalls[1].overrides && llmCalls[1].overrides.max_tokens === 8192, '决策轮带 toolMaxTokens（默认 8192）');
+  const lengthMsg = llmCalls[2].messages.find(m => m.role === 'system' && m.content.includes('截断'));
+  ok(lengthMsg && lengthMsg.content.includes('截断'), 'LENGTH_MSG（截断原因+分段写入指引）注入');
+  const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_8');
+  ok(rec && rec.status === 'done', 'run 最终 done');
+  ok(rec.steps.some(s => s.kind === 'notice' && s.notice === 'length_retry'), '截断重试 notice 入台账');
+  ok(rec.lengthRetries === 1, '台账记 lengthRetries=1');
+  ok(!rec.finalReply.includes('系统核实'), '真实写入后不触发幻觉兜底');
+}
+
+// ============ 用例 9：声称已写入但零成功写入（跑过读工具）→ 强制重试后真写 ============
+section('用例 9：声称已写入守卫（claim-without-write）');
+{
+  const doc = path.join(TMP, 'temp', 'claim.md');
+  llmScript = [
+    { content: '看目录。', toolCalls: [{ id: 'c1', name: 'list_dir', argsRaw: JSON.stringify({ path: TMP }) }], finishReason: 'tool_calls' },
+    // 读工具跑过了（executedTools>0，旧的假完成检测不覆盖），正文却声称已写入
+    { content: '我已经把整理报告写入 temp/claim.md 了。[情绪:开心]', finishReason: 'stop' },
+    { content: '补写。', toolCalls: [{ id: 'c2', name: 'write_file', argsRaw: JSON.stringify({ path: doc, content: 'report', reason: '补写整理报告' }) }], finishReason: 'tool_calls' },
+    { content: '这次真的写好了。[情绪:开心]', finishReason: 'stop' },
+  ];
+  llmCalls = [];
+  await loop.startRun({
+    reqId: 'chat_e2e_9', instruction: '整理目录并写入报告', baseMessages: baseMsgs(),
+    onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '9 不应 error: ' + e.message); },
+  });
+  ok(fs.existsSync(doc) && fs.readFileSync(doc, 'utf8') === 'report', '重试后文件真实写入');
+  const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_9');
+  ok(rec.retries === 1, '重试计数 = 1');
+  ok(rec.steps.some(s => s.kind === 'notice' && s.text.includes('声称已写入')), '声称已写入 notice 入台账');
+  const claimMsg = llmCalls[2].messages.find(m => m.role === 'system' && m.content.includes('并不存在'));
+  ok(claimMsg && claimMsg.content.includes('并不存在'), 'CLAIM_MSG 注入');
+  ok(!rec.finalReply.includes('系统核实'), '写入成功后无兜底注记');
+}
+
+// ============ 用例 9b：重试后仍声称已写入 → 幻觉兜底注记如实送达 ============
+section('用例 9b：顽固幻觉 → 系统核实注记');
+{
+  const ghost = path.join(TMP, 'temp', 'ghost.md');
+  llmScript = [
+    { content: '看目录。', toolCalls: [{ id: 'c1', name: 'list_dir', argsRaw: JSON.stringify({ path: TMP }) }], finishReason: 'tool_calls' },
+    { content: '已经写入 temp/ghost.md，内容完整。[情绪:开心]', finishReason: 'stop' },
+    { content: '已经写入 temp/ghost.md，内容完整，无需再做。[情绪:开心]', finishReason: 'stop' }, // 重试后依旧嘴硬
+  ];
+  llmCalls = [];
+  let finalFl = null;
+  await loop.startRun({
+    reqId: 'chat_e2e_9b', instruction: '写 ghost.md', baseMessages: baseMsgs(),
+    onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '9b 不应 error: ' + e.message); },
+  });
+  ok(!fs.existsSync(ghost), '文件确实未写入');
+  ok(finalFl && finalFl.clean.includes('系统核实'), '最终回复附加系统核实注记（不单独放行假完成）');
+  const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_9b');
+  ok(rec && rec.finalReply.includes('系统核实'), '台账 finalReply 同样带注记');
   store.set('settings', { agent: { permissionMode: 'full' } }); // 还原
 }
 

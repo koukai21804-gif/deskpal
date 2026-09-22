@@ -86,6 +86,18 @@ const { createProgressSplitter } = require(path.join(ROOT, 'src/main/services/ag
   eq(r.cleanDelta, '数组 arr[0] 与 arr[1] 的值\n', '普通方括号原样输出');
 }
 
+{
+  // 超长说明（模型违反 ≤40 字协议）：标记整行仍剥出，正文零泄漏，说明截断到 60
+  const sp = createProgressSplitter();
+  const long = '检查目标目录是否存在并逐一核对清单条目'.repeat(5);
+  const r = sp.feed(`开头\n[进展:验证] ${long}\n后续正文`);
+  ok(!r.cleanDelta.includes('进展'), '超长说明行：标记不泄漏');
+  eq(r.cleanDelta, '开头\n后续正文', '超长说明行剥除后正文衔接（标记行整行移除，前文换行保留）');
+  eq(r.progress.length, 1, '超长说明行仍剥出进展');
+  ok(r.progress[0].text.length === 60 && r.progress[0].text.startsWith('检查目标目录'), '说明截断到 60');
+  eq(sp.flush().cleanDelta, '', 'flush 无残余');
+}
+
 // ============ 2. 节拍解析（emotion.js） ============
 section('emotion.js createBeatParser 节拍/情绪/日程');
 const emotion = require(path.join(ROOT, 'src/main/services/emotion'));
@@ -292,5 +304,32 @@ section('agent/permissions.js fail-closed（超时路径）');
   ok(permissions.countPending() === 0, '无挂起请求');
 }
 
-console.log(`\n========== 测试结果：${passed} 通过 / ${failed} 失败 ==========`);
-process.exit(failed ? 1 : 0);
+// ============ 6.5 write_file 追加写入（大文件分段） ============
+// 工具 handler 为 async，置于末尾异步执行；汇总输出一并移入
+(async function () {
+  section('builtin write_file append 分段写入');
+  guard.setUserDataDir(TMP); // 第 4 节 store.init 已把 guard 的 userDataDir 指到 store 测试目录，这里指回本节用的 TMP
+  guard.setWriteMode('userData');
+  const seg = path.join(TMP, 'temp', 'seg-doc.md');
+  const r1 = await tools.invoke('write_file', { path: seg, content: '# Part 1\n', reason: '分段首段' });
+  const r2 = await tools.invoke('write_file', { path: seg, content: '# Part 2\n', reason: '分段追加', append: 'true' });
+  ok(r1 && String(r1).includes('已写入'), '首段覆盖写返回');
+  ok(fs.readFileSync(seg, 'utf8') === '# Part 1\n# Part 2\n', '覆盖写+append 追加拼出完整内容');
+  ok(String(r2).includes('已追加') && String(r2).includes('现共'), '追加返回带增量与总大小');
+  // append 布尔真值同样接受（模型可能传 true 而非 "true"）
+  await tools.invoke('write_file', { path: seg, content: '# Part 3\n', reason: '布尔追加', append: true });
+  ok(fs.readFileSync(seg, 'utf8') === '# Part 1\n# Part 2\n# Part 3\n', 'append=true（布尔）同样追加');
+  // 缺省 append = 整体覆盖（行为不变）
+  await tools.invoke('write_file', { path: seg, content: 'X', reason: '覆盖回写' });
+  ok(fs.readFileSync(seg, 'utf8') === 'X', '缺省 append 仍为整体覆盖');
+  const r3 = await tools.invoke('write_file', { path: seg, content: 'Y', reason: '假追加', append: 'false' });
+  ok(fs.readFileSync(seg, 'utf8') === 'Y', 'append="false" 按覆盖处理');
+  guard.setWriteMode('read');
+  // schema：append 可选，不进 required
+  const wfSchema = tools.openAiSchemas().find(s => s.function.name === 'write_file');
+  ok(wfSchema.function.parameters.properties.append, 'schema 含 append 参数描述');
+  ok(!wfSchema.function.parameters.required.includes('append'), 'append 非必填');
+
+  console.log(`\n========== 测试结果：${passed} 通过 / ${failed} 失败 ==========`);
+  process.exit(failed ? 1 : 0);
+})();

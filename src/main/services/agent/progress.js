@@ -4,8 +4,10 @@
 // 容错：同行紧跟下一个标记时各自剥出（说明文字不互相吞噬）。
 // 事件分层：llm:chunk 只承载干净正文；剥出的进展行由调用方转 agent:step 结构化推送。
 const PHASES = '设计|发现|能力|验证';
-// 标记 = 前缀 + 说明文字（非贪婪 ≤60 字，终止于换行 / 下一个标记 / 流尾）
-const MARK_RE = new RegExp('\\[进展[:：]\\s*(' + PHASES + ')\\s*\\]\\s*([^\\n]{0,60}?)(?=\\s*\\[进展|\\n|$)');
+// 标记 = 前缀 + 说明文字（非贪婪，终止于换行 / 下一个标记 / 流尾）。
+// 说明不设长度上限：模型偶尔违反 ≤40 字协议写长说明，若上限截断匹配会导致
+// 整个标记行（含「[进展:xx]」本身）漏进聊天气泡正文——宁可剥出后在 push 处截断。
+const MARK_RE = new RegExp('\\[进展[:：]\\s*(' + PHASES + ')\\s*\\]\\s*([^\\n]*?)(?=\\s*\\[进展|\\r?\\n|$)');
 
 function createProgressSplitter() {
   let buffer = '';
@@ -30,7 +32,7 @@ function createProgressSplitter() {
         }
       }
       clean += buffer.slice(0, start);
-      progress.push({ phase: m[1], text: (m[2] || '').replace(/\r+$/, '').trim() });
+      progress.push({ phase: m[1], text: (m[2] || '').replace(/\r+$/, '').trim().slice(0, 60) });
       buffer = buffer.slice(end); // 只删「标记+说明」段，行内其余正文保留
       // 标记独占一行（其后紧跟换行）时连同换行一起剥除，避免正文残留空行
       const nl = buffer.match(/^\r?\n/);

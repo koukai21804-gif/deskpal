@@ -102,8 +102,10 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
     });
     if (!res.ok) {
       const t = await res.text().catch(() => '');
-      // 兼容降级：部分网关不支持 stream+tools（400）→ 记标记，此后决策轮走非流式
-      if (withTools && res.status === 400) {
+      // 兼容降级：部分网关不支持 stream+tools（400）→ 记标记，此后决策轮走非流式。
+      // 例外：max_tokens 超上限的 400 与流式工具无关（工具轮输出上限大于聊天上限后可能出现），
+      // 不误标 toolsStreamBroken，直接把接口原始报错抛给用户去调小上限。
+      if (withTools && res.status === 400 && !/max[_\s-]?tokens|maximum.{0,20}tokens|too large/i.test(t)) {
         store.set('api', { toolsStreamBroken: true });
         const e = friendlyError('当前接口不支持流式工具调用，已自动切换为非流式决策轮');
         e.toolsStreamBroken = true;

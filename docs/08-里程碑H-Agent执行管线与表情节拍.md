@@ -234,7 +234,7 @@ prompt 指引对应 Amadeus `llm/prompts.py:24-40`（`[EMO]` 规则），但做�
 
 ## 验收清单（实现后自检记录，2026-09-22）
 
-自动化已验证（`npm run test:agent` 单元 58 项 + 集成 37 项；含下列条目的桩化等价路径）：
+自动化已验证（`npm run test:agent` 单元 87 项 + 集成 65 项；含下列条目的桩化等价路径）：
 
 - [x] roleplay「帮我在数据目录的 temp 里建一个 todo.md，写入三条今日待办」→ 权限卡（路径/字节/reason/倒计时）→ 允许一次 → diff 卡显示新建文件全文 → `temp/todo.md` 真实存在；步骤时间线含 `[进展:]` 行且正文无标记残留；runs.jsonl 有完整记录（e2e 用例 1；GUI 实测待真实 Key）
 - [x] 同指令点「拒绝」→ 模型收到拒绝并转述/改方案，无文件产生；连续拒 2 次同目标 → 不再尝试该目标（e2e 用例 2：熔断 system 注入 + 第三次不再发卡）
@@ -266,3 +266,5 @@ prompt 指引对应 Amadeus `llm/prompts.py:24-40`（`[EMO]` 规则），但做�
 14. **文件权限三档模式（用户需求，替代默认逐卡授权）**：`settings.agent.permissionMode`（read/userData/full，默认 read）。read=write 工具不下发+兜底拦截；userData=数据目录子树直写（模式选择即授权，无逐次卡，diff/台账照常）；full=fs-guard 扩大写白名单至本机大部分目录（核心系统目录/其他用户 profile/敏感文件/盘根文件/UNC 除外）+保留逐次权限卡。选择器在聊天窗输入区与设置页 API tab（零新增 IPC，走 store:set）。fs-guard 增加 `setWriteMode`，store.init 启动同步。
 15. **权限卡从未挂载的根因（GUI 实测发现，两处叠加）**：`permissions.js` 发出的请求事件载荷缺顶层 `reqId` 字段，渲染层挂载守卫 `d.reqId !== streaming.reqId` 将其静默丢弃——用户看到并点击的其实是宠物「去批准」气泡（仅聚焦聊天窗），聊天窗内的权限卡从未渲染，120s 后一律超时拒绝。修复：`permissions.request` 接收并透传 `reqId` 至事件顶层（附录 C 契约本就如此登记）。e2e 桩掉了 permissions 模块故未覆盖此链——CDP 驱动真实 GUI 的验证（scripts/cdp-repro.js）补上：full 模式下发卡→程序化点击→`[agent]` 日志确认「点击到达主进程→结算 allow_once→文件写入」全链 1 秒内完成。教训已记：**桩测覆盖不到「主进程推送↔渲染层守卫」的载荷契约，此类字段必须在两端断言一致**。
 16. **决策轮 thinking 关闭补全（见差异 10）后的 GUI 验证**：userData 档 GUI 真实链路（选择器→store:set→loop→fs-guard→写入→台账 mode=userData、无 permission 步骤、diff 归因 tool）全通；full 档卡链修复后全通。
+17. **工具轮 token 上限与截断/幻觉三重防护（2026-09-22 实测反馈修复）**：真实使用复现「有写入权限却写不进、且声称已写入」——runs.jsonl 显示决策轮 `finishReason=length`：`write_file` 参数内嵌整份文档，远超聊天 `max_tokens`（流式决策轮此前甚至不传该参数，沿用聊天默认），工具调用被腰斩作废；而 loop 把 length 轮当最终回复交付，模型中途叙述「我把文档写进数据目录根」被用户当成已完成；旧假完成检测要求「零工具执行」，读过 list_dir 后即失效。修复三层：① 决策轮（带工具）统一改用 `settings.agent.toolMaxTokens`（默认 8192，设置页可调；流式经 `overrides.max_tokens`、非流式经 `maxTokens` 下发）；② 工具可用时 `finishReason=length` 不再当最终答复——清管线注入 LENGTH_MSG 有界重试 2 次（`record.lengthRetries` 入台账）；③ 声称已写入守卫：最终正文命中「完成态写入动词+文件线索」而零成功写入 → 共用假完成重试预算换 CLAIM_MSG 强指令；重试耗尽仍声称 → finalReply 追加「系统核实」注记再交付。配套：`write_file` 新增可选 `append`（大文件分段追加，提示词/工具描述均教模型分段写）；llm.js 的 stream+tools 400 降级判定排除 max_tokens 类报错（避免误标 toolsStreamBroken）；full 档权限卡对 append 显示「追加文件」；渲染层收到任何 notice（含新增 length_retry）同步清空流式正文。新增 e2e 用例 8/9/9b 复现原故障形态（单元 87 + 集成 65 全过）；真实 API T3/T8 复验通过（test-real-llm.js 同时补上了三档模式落地后缺失的 `permissionMode:'full'` 注入）。
+18. **progress 剥离器超长说明泄漏（真实 API T3 发现）**：说明文字正则原为 `[^\n]{0,60}?`——模型违反 ≤40 字协议写出长说明时匹配不到行尾换行，整个 `[进展:xx]` 标记行漏进聊天气泡正文。改为不限长非贪婪匹配、剥出后在 push 处截断到 60 字（标记零泄漏优先于长度约束）。单测补「超长说明行」用例。
