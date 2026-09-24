@@ -154,3 +154,30 @@
 }
 .perm-select:hover { border-color: var(--dp-accent); }
 .model-tag { font-size: 11.5px; color: var(--dp-text-muted); flex: 1; }
+
+/* 长期记忆管理面板（/deep memory forcing；角色无感知） */
+.mem-add { display: flex; gap: 6px; margin-bottom: 12px; }
+.mem-add select, .mem-add input {
+  border: 1px solid var(--dp-border); border-radius: 7px; background: var(--dp-panel-2);
+  color: var(--dp-text); padding: 5px 8px; font-size: 12.5px;
+}
+.mem-add input { flex: 1; }
+.mem-add select { flex: none; cursor: pointer; }
+.mem-add input:focus, .mem-add select:focus { outline: none; border-color: var(--dp-accent); }
+.mem-list { display: flex; flex-direction: column; gap: 6px; max-height: 380px; overflow-y: auto; }
+.mem-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border: 1px solid var(--dp-border); border-radius: 9px; background: var(--dp-panel-2);
+  padding: 8px 10px;
+}
+.mem-main { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.mem-type {
+  flex: none; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+  background: var(--dp-panel); border: 1px solid var(--dp-border); color: var(--dp-text-muted);
+}
+.mem-type.t-relationship { color: #c2559a; border-color: #c2559a55; }
+.mem-type.t-event { color: #3f7fd6; border-color: #3f7fd655; }
+.mem-type.t-preference { color: #7dbe3c; border-color: #7dbe3c55; }
+.mem-imp { flex: none; font-size: 11px; color: #d9a02b; letter-spacing: 1px; }
+.mem-content { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-side { flex: none; display: flex; align-items: center; gap: 8px; }

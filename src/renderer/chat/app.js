@@ -2,11 +2,13 @@
 // ★v0.3：节拍按句触发宠物表情、agent 步骤时间线、写权限卡、diff 卡、中断任务提示条
 import { dp, initTheme, esc, errText, uid } from '../common/ipc.js';
 import { renderMD } from '../common/md.js';
-import { toast, confirmBox } from '../common/ui.js';
+import { toast, confirmBox, openModal } from '../common/ui.js';
 import { mountTitlebar } from '../common/windows/titlebar.js';
 
 const EMO_LABEL = { normal: '平常', happy: '开心', surprised: '惊讶', angry: '愤怒', thinking: '思考', sad: '悲伤' };
 const SCHEDULE_RE = /^(提醒我|帮我记一下|记一下|添加日程|加个日程)/;
+// 斜杠命令：长期记忆管理面板（与主进程 memory.js 同款；角色无感知）
+const MEMORY_CMD_RE = /^\s*\/\s*deep\s+memory\s+forcing\s*$/i;
 
 let tab = 'roleplay';
 let streaming = null;           // { tab, reqId, el, raw, steps, changes, permTimers }
@@ -355,6 +357,14 @@ async function send(text) {
   text = String(text ?? '').trim();
   if (!text || streaming) return;
 
+  // 0. 斜杠命令：长期记忆管理（仅角色扮演标签；不入史/不计数/不进 LLM，角色无感知）
+  if (tab === 'roleplay' && MEMORY_CMD_RE.test(text)) {
+    input.value = '';
+    autoGrow();
+    openMemoryManager();
+    return;
+  }
+
   // 1. 本地启动器匹配（零 API）
   try {
     const hit = await dp.launcherMatch(text);
@@ -518,6 +528,58 @@ input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(input.value); }
 });
 sendBtn.addEventListener('click', () => send(input.value));
+
+// ---------- 长期记忆管理面板（/deep memory forcing；角色无感知） ----------
+const MEM_TYPE_LABEL = { relationship: '关系', event: '事件', fact: '事实', preference: '偏好' };
+async function openMemoryManager() {
+  const { body } = openModal({ title: '🧠 长期记忆 · 角色无感知', width: '620px' });
+
+  async function refresh() {
+    let items = [];
+    try { items = await dp.memoryList(); } catch (err) { toast(errText(err), 'error'); }
+    body.innerHTML = `
+      <p class="hint" style="margin:4px 0 10px">这里是宠物的长期记忆（伪史），按重要性前 10 条每轮注入角色上下文。本面板的查看/添加/删除不会进入聊天记录，角色不会察觉这次管理。打开本面板时会自动补提取未入库的近期对话，请稍候片刻。</p>
+      <div class="mem-add">
+        <select id="memType">${Object.entries(MEM_TYPE_LABEL).map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
+        <select id="memImp">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${n === 3 ? 'selected' : ''}>${'★'.repeat(n)}</option>`).join('')}</select>
+        <input id="memContent" type="text" maxlength="60" placeholder="新增记忆内容（≤60字）…">
+        <button class="btn btn-sm btn-primary" id="memAddBtn">添加</button>
+      </div>
+      <div class="mem-list">
+        ${items.length ? items.map(it => `
+          <div class="mem-item">
+            <div class="mem-main">
+              <span class="mem-type t-${esc(it.type)}">${MEM_TYPE_LABEL[it.type] || esc(it.type)}</span>
+              <span class="mem-imp" title="重要性 ${it.importance}/5">${'★'.repeat(Math.max(1, Math.min(5, it.importance || 1)))}</span>
+              <span class="mem-content" title="${esc(it.content)}">${esc(it.content)}</span>
+            </div>
+            <div class="mem-side">
+              <span class="small muted">${esc(String(it.createdAt || '').slice(0, 10))}</span>
+              <button class="btn btn-sm btn-danger" data-del="${esc(it.id)}">删除</button>
+            </div>
+          </div>`).join('')
+        : '<p class="hint" style="text-align:center;padding:18px 0">暂无长期记忆——聊到重要信息（每 6 条用户消息 / 会话冷却后 / 打开本面板时）会自动提取；角色也会在你说「记住…」时主动写入。也可在上方手动添加。</p>'}
+      </div>`;
+    const contentInput = body.querySelector('#memContent');
+    const addBtn = body.querySelector('#memAddBtn');
+    const doAdd = async () => {
+      const content = contentInput.value.trim();
+      if (!content) return toast('记忆内容不能为空', 'error');
+      try {
+        await dp.memoryAdd({ type: body.querySelector('#memType').value, importance: +body.querySelector('#memImp').value, content });
+        toast('已添加记忆', 'ok');
+        refresh();
+      } catch (err) { toast(errText(err), 'error'); }
+    };
+    addBtn.addEventListener('click', doAdd);
+    contentInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) doAdd(); });
+    body.querySelectorAll('[data-del]').forEach(btn => btn.addEventListener('click', async () => {
+      if (!(await confirmBox('删除这条长期记忆？角色将不再记得它。', { okText: '删除', danger: true }))) return;
+      try { await dp.memoryDelete(btn.dataset.del); toast('已删除', 'ok'); refresh(); } catch (err) { toast(errText(err), 'error'); }
+    }));
+  }
+  await refresh();
+}
 
 // ---------- 导出 / 清空 ----------
 async function doExport() {

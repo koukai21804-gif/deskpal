@@ -44,7 +44,9 @@ function clampNum(v, min, max, dflt) {
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : dflt;
 }
 
-function jstr(v) { return JSON.stringify(v).slice(0, 4000); }
+// 工具结果回填上限按工具名取（builtin.RESULT_CAPS）：read_file 分段自截可放宽，
+// 其余工具保持 4000 保护性截断，防止 list_dir 等意外大结果撑爆决策轮上下文
+function jstr(v, limit = 4000) { return JSON.stringify(v).slice(0, limit); }
 
 // opts：
 //   reqId / instruction / baseMessages（chat.js 的 system+历史上下文）
@@ -146,7 +148,8 @@ async function startRun(opts) {
     if (!tool) return { ok: false, content: jstr({ ok: false, error: '未知工具: ' + tc.name }) };
     if (!tool.enabled) return { ok: false, content: jstr({ ok: false, error: `工具「${tc.name}」当前处于禁用状态` }) };
     if (!args || typeof args !== 'object') return { ok: false, content: jstr({ ok: false, error: '工具调用格式错误：arguments 不是合法的 JSON 对象' }) };
-    if (!String(args.path || '').trim()) return { ok: false, content: jstr({ ok: false, error: '缺少必填参数 path（绝对路径）' }) };
+    // path 仅是文件类工具的必填参数；save_memory 等无 path 工具不受此校验
+    if (tool.params && tool.params.path && !String(args.path || '').trim()) return { ok: false, content: jstr({ ok: false, error: '缺少必填参数 path（绝对路径）' }) };
 
     // run 内首个工具调用：建写区快照基线（纯聊天不快照），宠物转思考表情
     if (!tracer) {
@@ -208,9 +211,9 @@ async function startRun(opts) {
     }
     const summary = tool.permission === 'write'
       ? `${args.path}（${Buffer.byteLength(String(args.content ?? ''), 'utf8')}B）`
-      : String(args.path);
+      : String(args.path || Object.values(args).find(v => typeof v === 'string' && v.trim()) || tc.name).slice(0, 60);
     step({ kind: 'tool', tool: tc.name, summary, ok });
-    return { ok, content: jstr(result) };
+    return { ok, content: jstr(result, tools.RESULT_CAPS[tc.name] || 4000) };
   }
 
   // 正常收尾：差分归因 → 最终回复存史 → run 记录 → llm:done

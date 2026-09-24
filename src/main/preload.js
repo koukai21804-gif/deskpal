@@ -67,6 +67,11 @@ contextBridge.exposeInMainWorld('deskpal', {
   chatSaveHistory: (tab, messages) => invoke('chat:save-history', { tab, messages }),
   chatExport: (tab) => invoke('chat:export', { tab }),
 
+  // 长期记忆管理（/deep memory forcing 面板；不入聊天历史）
+  memoryList: () => invoke('memory:list', {}),
+  memoryAdd: (item) => invoke('memory:add', item),
+  memoryDelete: (id) => invoke('memory:delete', { id }),
+
   // 启动器
   launcherMatch: (text) => invoke('launcher:match', { text }),
   launcherRun: (id) => invoke('launcher:run', { id }),

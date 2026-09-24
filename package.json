@@ -1,6 +1,6 @@
 {
   "name": "deskpal",
-  "version": "0.3.1",
+  "version": "0.3.4",
   "description": "桌面宠物：角色扮演 / 书籍陪读 / 时间管理 / 日程提醒 / Agent 执行管线",
   "author": "deskpal",
   "main": "src/main/main.js",
@@ -10,7 +10,9 @@
     "dist": "node scripts/dist.js",
     "pack": "node scripts/dist.js --dir",
     "test:fs-guard": "node scripts/test-fs-guard.js",
-    "test:agent": "node scripts/test-agent.js && node scripts/test-agent-e2e.js",
+    "test:agent": "node scripts/test-agent.js && node scripts/test-agent-e2e.js && node scripts/test-context.js && node scripts/test-memory.js",
+    "test:context": "node scripts/test-context.js",
+    "test:memory": "node scripts/test-memory.js",
     "make-icon": "node scripts/make-icon.js",
     "make-icons": "electron scripts/gen-icons.js"
   },

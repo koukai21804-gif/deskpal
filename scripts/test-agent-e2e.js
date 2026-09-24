@@ -398,6 +398,30 @@ section('用例 9b：顽固幻觉 → 系统核实注记');
   store.set('settings', { agent: { permissionMode: 'full' } }); // 还原
 }
 
+// ============ 用例 10：save_memory 写长期记忆（无 path 工具，v0.3.4） ============
+section('用例 10：save_memory 落库长期记忆（「记下了」变成真的）');
+{
+  llmScript = [
+    { content: '我把这点固化下来。', toolCalls: [{ id: 'c1', name: 'save_memory', argsRaw: JSON.stringify({ content: '用户偏好纯思辨性哲学探讨，非项目焦虑', importance: '4', type: 'preference' }) }], finishReason: 'tool_calls' },
+    { content: '记下了，这次真的写进长期记忆了。[情绪:开心]', finishReason: 'stop' },
+  ];
+  llmCalls = [];
+  let finalFl = null;
+  await loop.startRun({
+    reqId: 'chat_e2e_10', instruction: '把这一点写进你的长期记忆', baseMessages: baseMsgs(),
+    onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '10 不应 error: ' + e.message); },
+  });
+  const memItems = store.get('memory/roleplay').items;
+  ok(memItems.some(i => i.content === '用户偏好纯思辨性哲学探讨，非项目焦虑' && i.type === 'preference' && i.importance === 4), '记忆真实入库（内容/类型/重要性归一）');
+  const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_10');
+  ok(rec && rec.status === 'done', 'run 正常收尾');
+  const toolStep = rec.steps.find(s => s.kind === 'tool' && s.tool === 'save_memory');
+  ok(toolStep && toolStep.ok, 'save_memory 步骤成功入台账');
+  ok(toolStep && toolStep.summary.includes('用户偏好'), '台账摘要显示记忆内容（非 undefined）');
+  ok(finalFl && finalFl.clean.includes('记下了'), '最终回复正常送达');
+  ok(rec.retries === 0 && rec.lengthRetries === undefined, '「写进长期记忆」表述未误触发幻觉/截断守卫');
+}
+
 function eq(a, b, name) {
   const ja = JSON.stringify(a), jb = JSON.stringify(b);
   ok(ja === jb, `${name}${ja === jb ? '' : `（got ${ja}, want ${jb}）`}`);

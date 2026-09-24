@@ -14,6 +14,11 @@ const loop = require('./agent/loop');
 
 const HISTORY_KEY = { roleplay: 'chats/roleplay', quick: 'chats/quick' };
 const MAX_KEEP = 200, CTX_MSGS = 20, CTX_TOKENS = 6400;
+// 记忆提取节奏（v0.3.4 消除「会话尾部滞留」缺口，三路触发同一入口）：
+//   每 6 条用户消息提取一次；会话冷却（≥30 分钟无新消息）由闲置定时器补提取；
+//   打开记忆面板时强制补提取（memory:list 前调 flushMemory）。
+const EXTRACT_EVERY = 6, IDLE_MIN_SINCE = 2, IDLE_GAP_MIN = 30;
+let extracting = false;
 
 function getHistory(tab) {
   return store.get(HISTORY_KEY[tab]).messages || [];
@@ -135,11 +140,24 @@ function runAgentTurn(tab, reqId, instruction, baseMessages) {
   });
 }
 
-// 记忆系统：距上次提取的用户消息 ≥10 → 低温提取
-async function memoryTick() {
+// 记忆系统：有未提取的用户消息时提取。force=true 无视节奏阈值（面板打开/冷却补提取用）。
+// 并发互斥：定时器/面板/回复收尾三方同时触发时只跑一次，避免重复条目。
+async function memoryTick(force = false) {
+  if (extracting) return false;
   const data = store.get('chats/roleplay');
   const since = data.userCountSince || 0;
-  if (since < 10) return;
+  if (since <= 0) return false;
+  if (!force && since < EXTRACT_EVERY) return false;
+  extracting = true;
+  try {
+    return await runExtract(data, since);
+  } finally {
+    extracting = false;
+  }
+}
+
+// 提取主体：LLM 摘要（失败正则兜底）→ 过滤入库（上限 50 淘汰）→ 清零计数
+async function runExtract(data, since) {
   const msgs = data.messages || [];
   // 只统计本次提取之后的消息里有多少条用户消息
   const recent = msgs.slice(-20).map(m => `${m.role === 'user' ? '用户' : 'AI'}: ${m.content}`).join('\n');
@@ -181,6 +199,26 @@ async function memoryTick() {
   }
   store.replace('memory/roleplay', mem);
   store.replace('chats/roleplay', { ...data, userCountSince: 0, lastExtractAt: dayjs().format() });
+  return true;
+}
+
+// 会话冷却补提取：每 10 分钟检查——有 ≥2 条未提取消息且 ≥30 分钟无新用户消息时补一次，
+// 收掉「会话尾部不足节奏阈值、永不提取」的缺口（unref：纯 Node 测试进程不因此挂住）
+const lullTimer = setInterval(() => {
+  try {
+    const data = store.get('chats/roleplay');
+    if ((data.userCountSince || 0) < IDLE_MIN_SINCE) return;
+    const lastUser = [...(data.messages || [])].reverse().find(m => m.role === 'user');
+    if (!lastUser || !lastUser.at) return;
+    const idleMin = (Date.now() - new Date(lastUser.at).getTime()) / 60000;
+    if (idleMin >= IDLE_GAP_MIN) memoryTick(true).catch(() => {});
+  } catch (_) {}
+}, 10 * 60 * 1000);
+if (lullTimer.unref) lullTimer.unref();
+
+// 打开记忆面板前的强制补提取：有未提取消息就提一次（无视节奏阈值），失败静默（面板照常可看）
+async function flushMemory() {
+  try { return await memoryTick(true); } catch (_) { return false; }
 }
 
 // 用户消息计数（chat:save-history 后由 ipc 调用）
@@ -209,4 +247,4 @@ async function exportChat(tab) {
   return filePath;
 }
 
-module.exports = { send, stop: llm.stop, getHistory, saveHistory, bumpUserCount, exportChat };
+module.exports = { send, stop: llm.stop, getHistory, saveHistory, bumpUserCount, exportChat, buildMessages, memoryTick, flushMemory };

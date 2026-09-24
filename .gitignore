@@ -16,3 +16,6 @@ tmp/
 # 系统
 Thumbs.db
 .DS_Store
+
+# 用户个人数据（聊天记录/测评报告），不入库
+docs/log/

@@ -17,6 +17,7 @@ const reportSvc = require('./services/activity/report');
 const scheduler = require('./services/schedule/scheduler');
 const scheduleParser = require('./services/schedule/parser');
 const scheduleExcel = require('./services/schedule/excel');
+const memory = require('./services/memory');
 
 function handle(channel, handler) {
   ipcMain.handle(channel, async (e, arg = {}) => {
@@ -197,6 +198,8 @@ function registerIpc() {
   handle('chat:send', async ({ tab, text }) => {
     if (!['roleplay', 'quick'].includes(tab)) throw new Error('未知聊天标签');
     if (!String(text || '').trim()) throw new Error('消息不能为空');
+    // 记忆管理斜杠命令兜底守卫：不入史、不计数、不进 LLM（渲染层拦截失效时这里兜住）
+    if (tab === 'roleplay' && memory.isMemoryCommand(text)) return { memoryCommand: true };
     chat.bumpUserCount(tab);
     return chat.send(tab, String(text).trim());
   });
@@ -209,6 +212,12 @@ function registerIpc() {
   handle('chat:history', ({ tab }) => chat.getHistory(tab));
   handle('chat:save-history', ({ tab, messages }) => { chat.saveHistory(tab, messages || []); return { ok: true }; });
   handle('chat:export', ({ tab }) => chat.exportChat(tab));
+
+  // ---------- 长期记忆管理（/deep memory forcing 面板；角色无感知，不入聊天历史） ----------
+  // 列出前先强制补提取（有未提取消息时）：「打开面板检查」这个动作本身就收掉会话尾部缺口
+  handle('memory:list', async () => { await chat.flushMemory(); return memory.listMemories(); });
+  handle('memory:add', (payload) => memory.addMemory(payload));
+  handle('memory:delete', ({ id }) => memory.deleteMemory(id));
 
   // ---------- 启动器 ----------
   handle('launcher:match', ({ text }) => launcher.match(text));
