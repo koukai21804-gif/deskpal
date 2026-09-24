@@ -95,7 +95,16 @@ function plainTurn(tab, reqId, messages) {
   const pipeline = makeStreamPipeline(tab, reqId);
   (async () => {
     try {
-      await llm.streamChat({ messages, reqId, onChunk: (delta) => pipeline.onDelta(delta) });
+      // 思考期反馈（deepseek 思考模式全程开启，v0.3.7 用户决策）：推理流先行、正文未出时
+      // 宠物切思考表情，避免长时间无输出的「卡住」观感；每轮流至多触发一次
+      let thinkingNoted = false;
+      await llm.streamChat({
+        messages, reqId,
+        onChunk: (delta) => pipeline.onDelta(delta),
+        onReasoning: () => {
+          if (!thinkingNoted) { thinkingNoted = true; emotion.broadcastEmotion('thinking', { source: 'chat', revertMs: 60000 }); }
+        },
+      });
       const fl = pipeline.flush();
       const { msgId } = await finalizeReply(tab, fl);
       sendToWin({ event: 'llm:done', data: { tab, reqId, clean: fl.clean, emotion: fl.emotion, beats: fl.beats, schedule: fl.schedule, aborted: false, msgId } });

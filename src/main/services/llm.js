@@ -66,9 +66,10 @@ function httpErrorMessage(status, bodyText) {
 }
 
 // SSE 流式：onChunk(delta, fullSoFar) → 返回完整文本
-// opts.withTools：附 OpenAI tools + tool_choice（Agent 决策轮）。返回 {content, toolCalls, finishReason}
+// opts.withTools：附 OpenAI tools + tool_choice（Agent 决策轮）。返回 {content, toolCalls, finishReason, reasoning, streamCut}
 // 而非字符串（不带 withTools 的旧调用方零改动）。
-async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId('req'), withTools = false }) {
+// opts.onReasoning(delta)：思考内容增量回调（不上屏，供调用方做「思考中」反馈）
+async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId('req'), withTools = false, onReasoning = null }) {
   const c = assertConfigured();
   const controller = new AbortController();
   active.set(reqId, controller);
@@ -87,9 +88,11 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
   if (withTools) {
     body.tools = overrides.tools;
     body.tool_choice = 'auto';
-    // 决策轮不需要推理；deepseek 系思考 token 计入 max_tokens，会挤占工具调用（H1.8）
-    if (isDeepseek(c.model)) body.thinking = { type: 'disabled' };
   }
+  // deepseek 思考模式（用户决策 v0.3.7：全程开启以保证回复质量）：显式开启。
+  // 思考原文经 reasoning_content 流式返回并回传（v0.3.6 修复保证多轮工具循环兼容）；
+  // 思考期间不上屏，调用方可经 onReasoning 做「思考中」反馈。仅 deepseek 系携带该参数。
+  if (isDeepseek(c.model)) body.thinking = { type: 'enabled' };
   // 工具调用增量累计：index -> {id, name, args}（arguments 字符串跨 chunk 拼接）
   const toolAcc = [];
   let finishReason = null;
@@ -121,6 +124,7 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
     const reader = res.body.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '', full = '', reasoning = '';
+    let sawDone = false;   // 是否收到 SSE 终止标记 [DONE]
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -131,7 +135,7 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
         const s = line.trim();
         if (!s.startsWith('data:')) continue;
         const data = s.slice(5).trim();
-        if (data === '[DONE]') continue;
+        if (data === '[DONE]') { sawDone = true; continue; }
         try {
           const j = JSON.parse(data);
           const choice = j.choices && j.choices[0];
@@ -139,7 +143,7 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
           if (choice.finish_reason) finishReason = choice.finish_reason;
           const delta = choice.delta || {};
           // 思考模型的推理内容：不进正文流（不上屏），仅累计供多轮回传（DeepSeek 思考模式强制要求）
-          if (delta.reasoning_content) reasoning += delta.reasoning_content;
+          if (delta.reasoning_content) { reasoning += delta.reasoning_content; if (onReasoning) { try { onReasoning(delta.reasoning_content); } catch (_) {} } }
           if (delta.content) { full += delta.content; if (onChunk) onChunk(delta.content, full); }
           if (withTools && Array.isArray(delta.tool_calls)) {
             for (const tc of delta.tool_calls) {
@@ -154,6 +158,11 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
       }
     }
     if (!withTools) return full;
+    // 流完整性：既没有 finish_reason 也没收到 [DONE] = 连接被提前掐断
+    // （区别于「网关不发 finish_reason 但正常 [DONE]」的兼容情况）。实测表现：
+    // 正文说到一半戛然而止，被当成完整回复交付，用户以为角色卡死。
+    const streamCut = !sawDone && finishReason == null;
+    if (streamCut) logger.warn(`[llm] 流式响应提前断开（无 finish_reason/[DONE]），已收内容 ${full.length} 字符`);
     const calls = toolAcc.filter(Boolean);
     return {
       content: full,
@@ -161,6 +170,7 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
       // 个别网关流末不带 finish_reason：按是否累计出工具调用推断
       finishReason: finishReason || (calls.length ? 'tool_calls' : 'stop'),
       reasoning,
+      streamCut,
     };
   } finally {
     active.delete(reqId);
@@ -178,6 +188,8 @@ async function genericCompletion(messages, { temperature = 0.3, maxTokens = 1024
   const c = assertConfigured();
   const body = { model: c.model, messages, temperature, max_tokens: maxTokens, stream: false };
   if (tools) { body.tools = tools; body.tool_choice = 'auto'; }
+  // 内部实用任务（记忆提取/日程解析/大纲等 JSON 输出）关思考：非角色对话，
+  // 无质量收益且拖慢耗时（角色对话的思考开启见 streamChat，v0.3.7 用户决策）
   if (isDeepseek(c.model)) body.thinking = { type: 'disabled' };
   const res = await fetch(normalizeEndpoint(c.endpoint), {
     method: 'POST',

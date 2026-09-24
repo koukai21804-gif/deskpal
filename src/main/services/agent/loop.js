@@ -134,18 +134,23 @@ async function startRun(opts) {
   // 单轮 LLM 调用：决策轮（stream+tools，400 时降级非流式）；收尾轮（超上限）不带工具纯流式
   async function callLLM(msgs, { noTools }) {
     const onDelta = (d) => { if (!isStale() && d) pipeline.onDelta(d); };
+    // 思考期反馈：思考模式被服务商强制开启后，决策轮开头可能长时间只有推理流、
+    // 上屏零输出——宠物此刻切思考表情，避免「没反应」的卡死观感（每轮至多一次）
+    let thinkingNoted = false;
+    const onReasoning = () => {
+      if (!thinkingNoted && !isStale()) { thinkingNoted = true; emotion.broadcastEmotion('thinking', { source: 'agent' }); }
+    };
     if (noTools) {
-      // deepseek 收尾轮同样关思考：与决策轮同理（思考 token 挤占 max_tokens），且带着
-      // 带工具调用的 assistant 历史进入思考模式时，服务端会强制校验 reasoning_content 回传
-      const overrides = llm.isDeepseek((store.get('api').model || '')) ? { thinking: { type: 'disabled' } } : {};
-      const text = await llm.streamChat({ messages: msgs, reqId: o.reqId, onChunk: onDelta, overrides });
+      // 收尾轮同样全程思考（v0.3.7 用户决策）：历史中带 tool_calls 的 assistant 消息
+      // 已按 v0.3.6 回传 reasoning_content，思考模式下服务端校验可过
+      const text = await llm.streamChat({ messages: msgs, reqId: o.reqId, onChunk: onDelta, onReasoning });
       return { content: text, toolCalls: [], finishReason: 'stop', reasoning: '' };
     }
     if (!llm.isToolsStreamBroken()) {
       try {
         return await llm.streamChat({
           messages: msgs, reqId: o.reqId, withTools: true,
-          overrides: { tools: schemas, max_tokens: toolMaxTokens }, onChunk: onDelta,
+          overrides: { tools: schemas, max_tokens: toolMaxTokens }, onChunk: onDelta, onReasoning,
         });
       } catch (e) {
         if (!e.toolsStreamBroken) throw e; // 400 已判定：本 run 起决策轮走非流式
@@ -280,6 +285,21 @@ async function startRun(opts) {
       if (rounds === 1 && wantsTools) firstRoundRequestedTools = true;
 
       if (!wantsTools) {
+        // 流中途断开（无 finish_reason/[DONE]，服务端/网络提前掐断）：正文半句戛然而止，
+        // 被当完整回复交付后角色永远沉默——用户观感即「卡死」（实测 run_mufiiou9_1）。
+        // 有界续跑重试，与截断重试共享预算（同为「输出流提前结束」类）。
+        if (res.streamCut && !overCap && lengthRetries < 2) {
+          lengthRetries++;
+          record.lengthRetries = lengthRetries;
+          step({ kind: 'notice', notice: 'stream_cut_retry', text: `响应流中途断开，继续任务（${lengthRetries}/2）` });
+          pipeline.reset();
+          toolTurns.push(
+            { role: 'assistant', content: res.content || '', ...(res.reasoning ? { reasoning_content: res.reasoning } : {}) },
+            { role: 'system', content: '上一轮的输出在传输中途被断开（内容戛然而止，那不是完整回复）。请继续先前的任务：读文件就继续调用 read_file（大文件带 offset 续段）、写文件就继续 write_file，完成后给出完整最终答复。' },
+          );
+          continue;
+        }
+
         // 截断轮：工具仍可用时 finishReason=length = 输出被 max_tokens 腰斩（工具调用多半只发了一半）。
         // 这轮正文是任务中途叙述而非最终答复（实测出现过「我把文档写进数据目录根」后调用作废、
         // 用户被误导以为已写入）——丢弃重出，有界 2 次。

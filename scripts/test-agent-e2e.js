@@ -46,7 +46,7 @@ llm.streamChat = async ({ messages, onChunk, withTools, overrides }) => {
     if (onChunk) onChunk(piece, (turn.content || ''));
   }
   return withTools
-    ? { content: turn.content || '', toolCalls: turn.toolCalls || [], finishReason: turn.finishReason || (turn.toolCalls && turn.toolCalls.length ? 'tool_calls' : 'stop'), reasoning: turn.reasoning || '' }
+    ? { content: turn.content || '', toolCalls: turn.toolCalls || [], finishReason: turn.finishReason || (turn.toolCalls && turn.toolCalls.length ? 'tool_calls' : 'stop'), reasoning: turn.reasoning || '', streamCut: !!turn.streamCut }
     : (turn.content || '');
 };
 llm.genericCompletion = async (messages, opts) => {
@@ -516,6 +516,32 @@ section('用例 14：多轮工具循环回传 reasoning_content');
   ok(r3Asst && r3Asst.reasoning_content === '思考：目录确认，写入目标文件。', '第 3 轮回传第 2 轮 reasoning_content');
   ok(fs.existsSync(target), '思考模式下任务正常完成');
   store.set('settings', { agent: { permissionMode: 'full' } }); // 还原
+}
+
+// ============ 用例 15：SSE 流中途断开（无 finish_reason/[DONE]）→ 续跑重试 ============
+section('用例 15：响应流中途断开的有界续跑');
+{
+  const seed = path.join(TMP, 'temp', 'cut-note.md');
+  fs.writeFileSync(seed, '断流续跑样本', 'utf8');
+  llmScript = [
+    // 复现实测 run_mufiiou9_1：正文半句戛然而止，无 finish_reason、无工具调用
+    { content: '——先列目录，确认真实存在什么。（返回了。真实目录：四个文件——一', streamCut: true, finishReason: 'stop' },
+    { content: '继续读。', toolCalls: [{ id: 'c1', name: 'read_file', argsRaw: JSON.stringify({ path: seed }) }], finishReason: 'tool_calls' },
+    { content: '读到了：断流续跑样本。任务完成。[情绪:平常]', finishReason: 'stop' },
+  ];
+  llmCalls = [];
+  let finalFl = null;
+  await loop.startRun({
+    reqId: 'chat_e2e_15', instruction: '读 docs\\log 里的四个文件', baseMessages: baseMsgs(),
+    onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '15 不应 error: ' + e.message); },
+  });
+  const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_15');
+  ok(rec.lengthRetries === 1, '断流触发续跑重试（lengthRetries=1）');
+  ok(rec.steps.some(s => s.kind === 'notice' && s.notice === 'stream_cut_retry'), '断流 notice 入台账');
+  const cutMsg = llmCalls[1].messages.find(m => m.role === 'system' && m.content.includes('传输中途被断开'));
+  ok(!!cutMsg, '续跑指引（继续调用工具+完整答复）注入');
+  ok(rec.steps.some(s => s.kind === 'tool' && s.tool === 'read_file' && s.ok === true), '续跑后真实读取');
+  ok(finalFl && finalFl.clean.includes('断流续跑样本'), '最终回复完整（非半句）');
 }
 
 function eq(a, b, name) {
