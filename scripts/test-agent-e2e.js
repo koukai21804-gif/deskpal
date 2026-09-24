@@ -422,6 +422,76 @@ section('用例 10：save_memory 落库长期记忆（「记下了」变成真�
   ok(rec.retries === 0 && rec.lengthRetries === undefined, '「写进长期记忆」表述未误触发幻觉/截断守卫');
 }
 
+// ============ 用例 11：虚假读取（实测 run19 复现：零工具却叙述「读完了」） ============
+section('用例 11：声称已读取守卫（read-claim，零 read_file）');
+{
+  const seed = path.join(TMP, 'temp', 'log-note.md');
+  fs.writeFileSync(seed, '笔记内容样本', 'utf8');
+  llmScript = [
+    // 复现：无进展标记、无工具调用，纯叙述伪装执行（taskLike=false，旧守卫完全漏过）
+    { content: '——目录确认。记录不少——我先列全，再逐个读。\n——（读完最后一个文件）\n——前辈，我读完了。全部 10 份聊天记录。', finishReason: 'stop' },
+    { content: '这次真的读了。', toolCalls: [
+      { id: 'c1', name: 'list_dir', argsRaw: JSON.stringify({ path: path.join(TMP, 'temp') }) },
+      { id: 'c2', name: 'read_file', argsRaw: JSON.stringify({ path: seed }) },
+    ], finishReason: 'tool_calls' },
+    { content: '读到的内容是：笔记内容样本。[情绪:平常]', finishReason: 'stop' },
+  ];
+  llmCalls = [];
+  let finalFl = null;
+  await loop.startRun({
+    reqId: 'chat_e2e_11', instruction: 'D:\\CC_project\\deskpal\\docs\\log 这个文件夹里有全部聊天记录，读完再回答', baseMessages: baseMsgs(),
+    onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '11 不应 error: ' + e.message); },
+  });
+  const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_11');
+  ok(rec.retries === 1, '读取声称触发重试（retries=1）');
+  ok(rec.steps.some(s => s.kind === 'notice' && s.text.includes('已读取')), '读取声称 notice 入台账');
+  const claimMsg = llmCalls[1].messages.find(m => m.role === 'system' && m.content.includes('编造'));
+  ok(!!claimMsg, 'READ_CLAIM_MSG（编造警告+逐份读取指引）注入');
+  ok(rec.steps.some(s => s.kind === 'tool' && s.tool === 'read_file' && s.ok === true), '重试后真实 read_file 执行');
+  ok(finalFl && finalFl.clean.includes('笔记内容样本'), '真实读取内容进回复');
+  ok(!finalFl.clean.includes('系统核实'), '真实读取后无兜底注记');
+}
+
+// ============ 用例 12：虚假写入「落盘」措辞（实测 run21 复现） ============
+section('用例 12：「落盘/校验完成」措辞的写入声称守卫');
+{
+  const notes = path.join(TMP, 'temp', 'titor_reading_notes.md');
+  llmScript = [
+    { content: '——前辈，我准备落盘。路径：D:\\CC_project\\deskpal\\docs\\log\\titor_reading_notes.md。\n——第二段，落盘。\n——第三段，落盘。\n——前辈，笔录落盘了。校验完成，无截断。', finishReason: 'stop' },
+    { content: '现在真写。', toolCalls: [{ id: 'c1', name: 'write_file', argsRaw: JSON.stringify({ path: notes, content: '笔录正文', reason: '补写笔录' }) }], finishReason: 'tool_calls' },
+    { content: '这次真的写好了，你可以去文件夹看。[情绪:平常]', finishReason: 'stop' },
+  ];
+  permDecision = 'allow_once';
+  llmCalls = [];
+  await loop.startRun({
+    reqId: 'chat_e2e_12', instruction: '把笔录生成在 docs\\log 文件夹内', baseMessages: baseMsgs(),
+    onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '12 不应 error: ' + e.message); },
+  });
+  ok(fs.existsSync(notes) && fs.readFileSync(notes, 'utf8') === '笔录正文', '重试后笔录真实落盘');
+  const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_12');
+  ok(rec.retries === 1 && rec.steps.some(s => s.kind === 'notice' && s.text.includes('已写入')), '「落盘了」触发写入声称重试');
+  const claimMsg = llmCalls[1].messages.find(m => m.role === 'system' && m.content.includes('并不存在'));
+  ok(!!claimMsg, 'CLAIM_MSG 注入');
+}
+
+// ============ 用例 13：重试后仍声称已读取 → 系统核实兜底注记 ============
+section('用例 13：顽固虚假读取 → 兜底注记（复现 run20 重试后再犯）');
+{
+  llmScript = [
+    { content: '我读完了，全部记录都过了一遍。', finishReason: 'stop' },
+    { content: '真的，全部记录我读完了，结论不变。', finishReason: 'stop' },
+  ];
+  llmCalls = [];
+  let finalFl = null;
+  await loop.startRun({
+    reqId: 'chat_e2e_13', instruction: '看一下 docs\\log 里的测评报告再总结', baseMessages: baseMsgs(),
+    onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '13 不应 error: ' + e.message); },
+  });
+  ok(finalFl && finalFl.clean.includes('系统核实：本次任务没有实际读取任何文件'), '读取兜底注记附加（不单独放行虚假读取）');
+  const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_13');
+  ok(rec && rec.finalReply.includes('系统核实'), '台账 finalReply 同样带读取注记');
+}
+
 function eq(a, b, name) {
   const ja = JSON.stringify(a), jb = JSON.stringify(b);
   ok(ja === jb, `${name}${ja === jb ? '' : `（got ${ja}, want ${jb}）`}`);
