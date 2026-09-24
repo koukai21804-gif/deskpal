@@ -135,8 +135,11 @@ async function startRun(opts) {
   async function callLLM(msgs, { noTools }) {
     const onDelta = (d) => { if (!isStale() && d) pipeline.onDelta(d); };
     if (noTools) {
-      const text = await llm.streamChat({ messages: msgs, reqId: o.reqId, onChunk: onDelta });
-      return { content: text, toolCalls: [], finishReason: 'stop' };
+      // deepseek 收尾轮同样关思考：与决策轮同理（思考 token 挤占 max_tokens），且带着
+      // 带工具调用的 assistant 历史进入思考模式时，服务端会强制校验 reasoning_content 回传
+      const overrides = llm.isDeepseek((store.get('api').model || '')) ? { thinking: { type: 'disabled' } } : {};
+      const text = await llm.streamChat({ messages: msgs, reqId: o.reqId, onChunk: onDelta, overrides });
+      return { content: text, toolCalls: [], finishReason: 'stop', reasoning: '' };
     }
     if (!llm.isToolsStreamBroken()) {
       try {
@@ -306,22 +309,29 @@ async function startRun(opts) {
           step({ kind: 'notice', notice: 'retry', text: noticeText });
           pipeline.reset(); // 管线与渲染层正文同步清空，重试轮从零开始
           const claimMsg = claimKind === 'write' ? CLAIM_MSG : claimKind === 'read' ? READ_CLAIM_MSG : FAKE_DONE_MSG;
-          toolTurns.push({ role: 'assistant', content: res.content || '' }, { role: 'system', content: claimMsg });
+          toolTurns.push(
+            { role: 'assistant', content: res.content || '', ...(res.reasoning ? { reasoning_content: res.reasoning } : {}) },
+            { role: 'system', content: claimMsg },
+          );
           continue;
         }
         return await finishRun(res.content);
       }
 
-      // 工具轮：assistant tool_calls + 逐个执行回填 tool results（id 缺失时生成并两侧一致）
+      // 工具轮：assistant tool_calls + 逐个执行回填 tool results（id 缺失时生成并两侧一致）。
+      // 思考模式（DeepSeek 强制）：assistant 消息必须原样回传上一轮的 reasoning_content，
+      // 否则接口 400「The reasoning_content in the thinking mode must be passed back」
       const calls = res.toolCalls.map((tc, i) => ({ tc, id: tc.id || `call_${runId}_${i}` }));
-      toolTurns.push({
+      const asstMsg = {
         role: 'assistant',
         content: res.content || '',
+        ...(res.reasoning ? { reasoning_content: res.reasoning } : {}),
         tool_calls: calls.map(({ tc, id }) => ({
           id, type: 'function',
           function: { name: tc.name, arguments: tc.argsRaw || '{}' },
         })),
-      });
+      };
+      toolTurns.push(asstMsg);
       let needBreakMsg = false;
       for (const { tc, id } of calls) {
         if (isStale()) return;

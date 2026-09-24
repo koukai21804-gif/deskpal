@@ -46,13 +46,13 @@ llm.streamChat = async ({ messages, onChunk, withTools, overrides }) => {
     if (onChunk) onChunk(piece, (turn.content || ''));
   }
   return withTools
-    ? { content: turn.content || '', toolCalls: turn.toolCalls || [], finishReason: turn.finishReason || (turn.toolCalls && turn.toolCalls.length ? 'tool_calls' : 'stop') }
+    ? { content: turn.content || '', toolCalls: turn.toolCalls || [], finishReason: turn.finishReason || (turn.toolCalls && turn.toolCalls.length ? 'tool_calls' : 'stop'), reasoning: turn.reasoning || '' }
     : (turn.content || '');
 };
 llm.genericCompletion = async (messages, opts) => {
-  llmCalls.push({ kind: 'generic', messages });
+  llmCalls.push({ kind: 'generic', messages, opts });
   const turn = llmScript.shift() || { content: '（空）', toolCalls: [] };
-  return { content: turn.content || '', toolCalls: turn.toolCalls || [], finishReason: (turn.toolCalls && turn.toolCalls.length) ? 'tool_calls' : 'stop' };
+  return { content: turn.content || '', toolCalls: turn.toolCalls || [], finishReason: (turn.toolCalls && turn.toolCalls.length) ? 'tool_calls' : 'stop', reasoning: turn.reasoning || '' };
 };
 llm.stop = () => {};
 
@@ -490,6 +490,32 @@ section('用例 13：顽固虚假读取 → 兜底注记（复现 run20 重试�
   ok(finalFl && finalFl.clean.includes('系统核实：本次任务没有实际读取任何文件'), '读取兜底注记附加（不单独放行虚假读取）');
   const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_13');
   ok(rec && rec.finalReply.includes('系统核实'), '台账 finalReply 同样带读取注记');
+}
+
+// ============ 用例 14：思考模式 reasoning_content 回传（DeepSeek 思考模式强制要求） ============
+section('用例 14：多轮工具循环回传 reasoning_content');
+{
+  store.set('settings', { agent: { permissionMode: 'userData' } }); // 直写，聚焦回传链路
+  const target = path.join(TMP, 'temp', 'reasoning-notes.md');
+  llmScript = [
+    { content: '先读目录。', reasoning: '思考：用户要建文件，先看目录。', toolCalls: [{ id: 'c1', name: 'list_dir', argsRaw: JSON.stringify({ path: TMP }) }], finishReason: 'tool_calls' },
+    { content: '再写文件。', reasoning: '思考：目录确认，写入目标文件。', toolCalls: [{ id: 'c2', name: 'write_file', argsRaw: JSON.stringify({ path: target, content: 'notes', reason: '写笔记' }) }], finishReason: 'tool_calls' },
+    { content: '完成了。', reasoning: '', finishReason: 'stop' },
+  ];
+  llmCalls = [];
+  await loop.startRun({
+    reqId: 'chat_e2e_14', instruction: '读目录并建 reasoning-notes.md', baseMessages: baseMsgs(),
+    onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '14 不应 error: ' + e.message); },
+  });
+  // 第 2 轮请求：assistant(tool_calls) 消息必须带上一轮的 reasoning_content
+  const r2Asst = llmCalls[1].messages.find(m => m.role === 'assistant' && m.tool_calls);
+  ok(r2Asst && r2Asst.reasoning_content === '思考：用户要建文件，先看目录。', '第 2 轮回传第 1 轮 reasoning_content');
+  // 第 3 轮请求：同理回传第 2 轮的（取最后一条带 tool_calls 的 assistant，第 1 条是第 1 轮的）
+  const asstCalls = llmCalls[2].messages.filter(m => m.role === 'assistant' && m.tool_calls);
+  const r3Asst = asstCalls[asstCalls.length - 1];
+  ok(r3Asst && r3Asst.reasoning_content === '思考：目录确认，写入目标文件。', '第 3 轮回传第 2 轮 reasoning_content');
+  ok(fs.existsSync(target), '思考模式下任务正常完成');
+  store.set('settings', { agent: { permissionMode: 'full' } }); // 还原
 }
 
 function eq(a, b, name) {

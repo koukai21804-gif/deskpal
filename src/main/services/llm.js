@@ -103,9 +103,12 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
     if (!res.ok) {
       const t = await res.text().catch(() => '');
       // 兼容降级：部分网关不支持 stream+tools（400）→ 记标记，此后决策轮走非流式。
-      // 例外：max_tokens 超上限的 400 与流式工具无关（工具轮输出上限大于聊天上限后可能出现），
-      // 不误标 toolsStreamBroken，直接把接口原始报错抛给用户去调小上限。
-      if (withTools && res.status === 400 && !/max[_\s-]?tokens|maximum.{0,20}tokens|too large/i.test(t)) {
+      // 例外（不误标 toolsStreamBroken，直接把接口原始报错抛给用户）：
+      // ① max_tokens 超上限——与流式工具无关；② thinking 模式要求回传 reasoning_content——
+      // 是会话内容问题（loop 已改为回传），标记只会让此后所有决策轮白白降级非流式。
+      if (withTools && res.status === 400
+        && !/max[_\s-]?tokens|maximum.{0,20}tokens|too large/i.test(t)
+        && !/reasoning_content|thinking/i.test(t)) {
         store.set('api', { toolsStreamBroken: true });
         const e = friendlyError('当前接口不支持流式工具调用，已自动切换为非流式决策轮');
         e.toolsStreamBroken = true;
@@ -113,9 +116,11 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
       }
       throw friendlyError(httpErrorMessage(res.status, t));
     }
+    // 自愈：once stream+tools 成功，清掉历史误标的降级开关（如服务端故障期被误置）
+    if (withTools && store.get('api').toolsStreamBroken) store.set('api', { toolsStreamBroken: false });
     const reader = res.body.getReader();
     const decoder = new TextDecoder('utf-8');
-    let buffer = '', full = '';
+    let buffer = '', full = '', reasoning = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -133,6 +138,8 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
           if (!choice) continue;
           if (choice.finish_reason) finishReason = choice.finish_reason;
           const delta = choice.delta || {};
+          // 思考模型的推理内容：不进正文流（不上屏），仅累计供多轮回传（DeepSeek 思考模式强制要求）
+          if (delta.reasoning_content) reasoning += delta.reasoning_content;
           if (delta.content) { full += delta.content; if (onChunk) onChunk(delta.content, full); }
           if (withTools && Array.isArray(delta.tool_calls)) {
             for (const tc of delta.tool_calls) {
@@ -153,6 +160,7 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
       toolCalls: calls.map(t => ({ id: t.id, name: t.name, argsRaw: t.args })),
       // 个别网关流末不带 finish_reason：按是否累计出工具调用推断
       finishReason: finishReason || (calls.length ? 'tool_calls' : 'stop'),
+      reasoning,
     };
   } finally {
     active.delete(reqId);
@@ -183,7 +191,8 @@ async function genericCompletion(messages, { temperature = 0.3, maxTokens = 1024
   const j = await res.json();
   const msg = (j.choices && j.choices[0] && j.choices[0].message) || {};
   // 思考型模型可能把内容放在 reasoning_content（content 被截断为空时兜底）
-  const content = String(msg.content || '') || String(msg.reasoning_content || '');
+  const reasoningContent = String(msg.reasoning_content || '');
+  const content = String(msg.content || '') || reasoningContent;
   if (!tools) return content;
   return {
     content,
@@ -191,6 +200,8 @@ async function genericCompletion(messages, { temperature = 0.3, maxTokens = 1024
       id: t.id, name: t.function && t.function.name, argsRaw: (t.function && t.function.arguments) || '',
     })),
     finishReason: (j.choices && j.choices[0] && j.choices[0].finish_reason) || 'stop',
+    // 思考模式的推理原文：多轮工具循环必须原样回传（DeepSeek 思考模式强制要求），与流式分支对齐
+    reasoning: reasoningContent,
   };
 }
 
@@ -245,4 +256,4 @@ function friendlyError(msg) {
 // stream+tools 是否已被 400 判定不可用（决策轮据此降级非流式）
 function isToolsStreamBroken() { return !!store.get('api').toolsStreamBroken; }
 
-module.exports = { streamChat, genericCompletion, testConnection, listModels, stop, newReqId, getConfig, saveKey, assertConfigured, normalizeEndpoint, isToolsStreamBroken };
+module.exports = { streamChat, genericCompletion, testConnection, listModels, stop, newReqId, getConfig, saveKey, assertConfigured, normalizeEndpoint, isToolsStreamBroken, isDeepseek };
