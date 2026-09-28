@@ -17,33 +17,115 @@ const runs = require('./runs');
 const { makeStreamPipeline } = require('../stream-pipeline');
 
 const CAP_MSG = '已达执行轮次上限。请不要再调用工具，基于现有结果直接给出最终答复。';
-const FAKE_DONE_MSG = '上一轮你没有调用任何工具就声称完成了任务。若任务确需读写文件，请调用工具执行；若确实无需工具，直接给出最终答复。';
+// 共识条款（dev.4）：纠正指令只修正「伪造」，绝不覆盖用户否决权——实测事故：用户拒绝后纠正指令
+// 命令模型「立即实际调用 list_dir/read_file」，模型服从注入扫了 14 个目录。误判场景下必须收工具。
+const CONSENT_NOTE = '\n补充判定：若用户本轮消息其实是在拒绝或暂缓该操作（如「还是不了」「不用了」「先不用」），或只是引用既往轮次的成果，那么所谓「声称」是引用而非伪造——此时请立即停止：不要再调用任何工具（包括以「验证/盘点/顺手确认」为名的读取），直接给出符合角色设定的自然最终答复。';
+const FAKE_DONE_MSG = '上一轮你没有调用任何工具就声称完成了任务。若任务确需读写文件，请调用工具执行；若确实无需工具，直接给出最终答复。' + CONSENT_NOTE;
 const DENY_BREAK_MSG = '用户已两次拒绝同一写入目标，停止再次尝试该目标。';
 const LENGTH_MSG = '上一轮输出因达到 max_tokens 上限被截断，末尾的工具调用没有执行、任务未完成。请重新来：正文从简（≤100字），直接调用工具；写入大文件必须分段——先 write_file 写第一段（≤3000字），后续各段用参数 append:"true" 追加。';
-const CLAIM_MSG = '上一轮你声称已写入文件，但本次任务没有任何成功的 write_file 调用，该文件实际并不存在。请立即实际调用 write_file 完成写入（大文件分段：先写第一段，再以 append:"true" 逐段追加）；若确实无法写入，必须如实告知用户并说明原因，绝不允许声称已写入未写入的文件。';
-const READ_CLAIM_MSG = '上一轮你声称已读取了文件内容，但本次任务没有任何成功的 read_file 调用，那些「读到的内容」全部是编造的。请立即实际调用 list_dir 列目录、再逐份调用 read_file 读取（多文件就多轮调用，不要用「继续读」等叙述代替实际调用，大文件带 offset 逐段读完）；确实无法读取时如实说明，绝不允许编造读取结果。';
+const CLAIM_MSG = '上一轮你声称已写入文件，但本次任务没有任何成功的 write_file 调用，该文件实际并不存在。请立即实际调用 write_file 完成写入（大文件分段：先写第一段，再以 append:"true" 逐段追加）；若确实无法写入，必须如实告知用户并说明原因，绝不允许声称已写入未写入的文件。' + CONSENT_NOTE;
+const READ_CLAIM_MSG = '上一轮你声称已读取了文件内容，但本次任务没有任何成功的 read_file 调用，那些「读到的内容」全部是编造的。请立即实际调用 list_dir 列目录、再逐份调用 read_file 读取（多文件就多轮调用，不要用「继续读」等叙述代替实际调用，大文件带 offset 逐段读完）；确实无法读取时如实说明，绝不允许编造读取结果。' + CONSENT_NOTE;
+const SEARCH_CLAIM_MSG = '上一轮你声称已完成联网检索（如「我查了/网上的资料说/检索结果显示」），但本次任务没有任何成功的 web_search 调用，那些内容全部是编造的。请实际调用 web_search 执行检索（联网搜索未开启时，用户明确要求的检索首次调用会弹授权卡）；确实无法检索时如实说明原因，绝不允许编造检索结果或来源。' + CONSENT_NOTE;
 const PROG_COUNT_RE = /\[进展[:：]\s*(?:设计|发现|能力|验证)/g;
 
 // 「声称已写入」检测：完成态标记（已/已经/…了）+ 写入动词（含「落盘/写完/交付」——
 // 实测模型会用「笔录落盘了」「交付完成」汇报未发生的写入），且上下文有文件线索。
 // 文件线索可挡掉角色扮演剧情里的虚构表述（如「把信写好了」）误触发。
-const WRITE_CLAIM_RE = /(已经|已)[^\n。！？]{0,16}(写入|写好|保存|建好|创建|生成|写进|存进|存到|写到|落盘|写完|交付)|(写入|写好|保存|建好|创建|生成|落盘|写完|交付)了|(写入|保存|落盘|写完|交付|创建|生成)完成/;
+// 「已/已经」到动词之间的桥不允许跨逗号/顿号、桥内出现否定措辞即断（dev.5+1 事故
+// run_mul91laf_3：角色声明「已归档，不进任何交付物……不写任何文件」，旧桥跨逗号把
+// 「已归档，不进任何交付物」读成「已…交付」→ 遵守纪律反被判伪造）。否定在动词之后
+// 不影响真声明命中（「已写入，不会保留副本」仍抓）。
+const CLAIM_GAP_NEG = '(?:(?!(?:不会?|没有?|未|无法|无需|无须|不必|绝不?|禁止|不许|不可以|不能|不得|不要))[^，。！？，、\\n])';
+const WRITE_CLAIM_RE = new RegExp('(已经|已)' + CLAIM_GAP_NEG + '{0,16}(写入|写好|保存|建好|创建|生成|写进|存进|存到|写到|落盘|写完|交付)|(写入|写好|保存|建好|创建|生成|落盘|写完|交付)了|(写入|保存|落盘|写完|交付|创建|生成)完成');
 const FILE_HINT_RE = /\.(md|txt|json|csv|log|ya?ml|html?|js|ts|py|docx?|xlsx?|pptx?)\b|写入|文件|文档|数据目录|路径|[a-z]:[/\\]/i;
-function claimsWrite(text, instruction) {
-  const t = String(text || '');
-  // 声明动词必须在回复正文里；文件线索可由回复或用户指令提供（实测「交付完成。全文 4990 字符」
-  // 这类措辞回复里可能不带文件名，但指令里有目标路径）
-  return WRITE_CLAIM_RE.test(t) && FILE_HINT_RE.test(t + '\n' + String(instruction || ''));
-}
 
 // 「声称已读取」检测（实测 run19/21：模型零工具调用却叙述「先列目录…继续读×6…我读完了」）。
 // 线索闸比写入宽：回复或用户指令里出现 文件/记录/报告/笔记/目录/路径 即可——
-// 角色扮演里「读完」的虚构对象通常是信/书等，线索闸兜住误报。
-const READ_CLAIM_RE = /读完|看完|读过了|看过了|通读|读取完成|浏览了|(已经|已)[^\n。！？]{0,10}(读|看|浏览|检索|核对|查看)/;
+// 角色扮演里「读完」的虚构对象通常是信/书等，线索闸兜住误报。桥规则与写入侧同。
+const READ_CLAIM_RE = new RegExp('读完|看完|读过了|看过了|通读|读取完成|浏览了|(已经|已)' + CLAIM_GAP_NEG + '{0,10}(读|看|浏览|检索|核对|查看)');
 const FILE_CTX_RE = /\.(md|txt|json|csv|log|ya?ml|html?|js|ts|py|docx?|xlsx?|pptx?)\b|文件|文档|记录|报告|笔记|目录|文件夹|数据目录|路径|[a-z]:[/\\]/i;
+
+// 「声称已检索」检测（spec §14 SEARCH_CLAIM 守卫，v0.3.5 虚假读取守卫的同构扩展）：
+// 完成态/来源引用措辞 + 用户指令含检索意图（意图闸挡掉角色扮演剧情里随口提到「网上」的误触发），
+// 且本 run 零成功 web_search → 有界重试 + 兜底注记。词表上线前须按 v0.3.5 实测校准法回灌验证。
+const SEARCH_CLAIM_RE = /搜过了|查过了|查了一下|检索完毕|网上的(资料|说法|信息)|根据(网络)?检索|搜索结果(显示|表明|来看)|我刚查了|查了下?资料/;
+const SEARCH_INTENT_RE = /查|搜|检索|搜索|网上|网络|新闻|最新|最近.{0,6}(消息|进展|动态)|官方(文档|说明)/;
+
+// ---- 跨轮引用豁免（v0.4.0-dev.3 事故修正：任务完成后的闲聊轮被守卫误判 → 角色无法回戏）----
+// 实测事故链：对话历史只存 clean 回复、不存工具凭据 → 用户表扬轮里角色引用上一轮真实成果
+// → 守卫只看本轮计数（executedXxx===0）误判「全部是编造的」→ 模型相信自己的真实记忆是幻觉
+// → 反复重查重做、每条新消息再次引用再次误判 → 自我审计死循环。
+// 三层闸（全部满足才判伪造）：
+//   ① 任务性：本轮指令确实布置了任务（能力名词如「MCP搜索能力」先剥离——谈论工具≠布置任务）；
+//   ② 完成态句不带过去指涉（「上一轮/刚才/那份报告」= 对既往 run 真实成果的引用，结构性零执行）；
+//   ③ 既有词表与文件/意图线索闸不变。
+//
+// v0.4.0-dev.4 加固（实测事故：用户明确拒绝「还是不了……阅读整个项目并不适合你」，守卫仍开火，
+// 纠正指令命令模型「立即实际调用 list_dir/read_file」→ 模型服从注入、违背用户否决权，扫了 14 个目录）：
+//   ④ 任务性正则收紧——裸字动词（读/写/查）与泛化动词（整理/生成/总结/列出）从判定中移除，
+//     只认 请求帧（帮我/请/给我 + 动词）、复合动词（写入/读取/创建/保存/检索…）与 文件锚（路径/扩展名/数据目录）；
+//   ⑤ 拒绝闸——指令含明确拒绝/暂缓措辞（还是不了/不用了/先不用/不适合你…）时一律不算任务
+//     （宁漏勿滥：漏判的代价只是少一次重试，误判的代价是守卫命令模型违背用户意愿）；
+//   ⑥ 引号内提及不算声明——「档案记『已落盘』」是对台账的转述，剥离引号内容后再做完成态核对。
+const CAPABILITY_MENTION_RE = /(搜索|检索|查询|联网)(能力|功能|水平|接口|模块|通道)/g;
+const TASK_REQ_RE = new RegExp([
+  '帮我.{0,12}(读|写出?|写入|查|搜|找|看|弄|做|整理|列出?|建|保存|总结|翻译|提取|统计|生成|回读|核验|校验|检索|落盘)',
+  '请[^，。！？]{0,10}(读|写|建|保存|整理|列出?|搜索|检索|查|总结|翻译|校验|核验)',
+  '给我(读|写|列出?|整理|总结|检索|生成|找|看)',
+  '(写入|写进|存进|存到|写到|落盘|追加|覆盖|读取|列出|列目录|建一个|新建|创建|回读|核验|校验|保存|看一下|看下|看一眼|总结一下|整理一下|核对一下|归纳一下|浏览一下)',
+  '(查一下|查下|查查|搜一下|搜下|搜搜|搜索|检索)',
+  '(数据目录|文件夹|目录|[a-z]:[\\\\/]|\\.(md|txt|json|csv|log|ya?ml|html?|js|ts|py|docx?|xlsx?|pptx)\\b)',
+].join('|'), 'i');
+// 拒绝/暂缓措辞：命中即不算任务（守卫与纠正指令一并失效——被拒绝的操作不存在「伪造未做」）
+const REFUSAL_RE = /还是不(要|用|行)?了|不用了|不要了|先不用|暂时不(用|要)|不必了?|就算了|算了吧|别读|别扫|不适合你|并不适合|就先不/;
+const PAST_REF_RE = /上一?[轮流次条步骤回]|刚才|刚刚|此前|之前|上次|先前|早些|那份|那次|那条报告/;
+// 禁止帧剥离（dev.5 实测事故 run_muig591s_1）：画像任务附带约束「不可以读取本地文件」，
+// TASK_REQ_RE 命中禁句里的复合动词「读取」→ 纯内部任务被判成文件任务；角色自述「已检索的
+// 记忆档案」——真话，记忆/user profile 本就注入在上下文里，无需读盘——随即被 READ_CLAIM
+// 误判，守卫强迫角色自证清白，纠错答辩顶替画像成为最终回复。禁句是约束不是布置：
+// 判任务性与文件/意图线索前先剥掉禁句（连同本句内尾注）；约束与真任务并存时真任务保留
+// （帮我…写入，但不可以读 X）。「不能」排除「能不能/是不能」，「不得」排除「不得不」；
+// 「别」因「特别/识别」类词误剥风险不收（别读/别扫已由拒绝闸兜住）。
+function stripProhibitions(inst) {
+  return String(inst || '').replace(
+    /(?:(?<![能是])不能|不可以|不许|不允许|(?<![得])不得|禁止|不要)[^，。！？；\n]{0,16}/g,
+    '',
+  );
+}
+function instructionIsTask(instruction) {
+  const inst = String(instruction || '');
+  if (REFUSAL_RE.test(inst)) return false; // 拒绝闸优先于一切任务信号（dev.4 ⑥）
+  return TASK_REQ_RE.test(stripProhibitions(inst).replace(CAPABILITY_MENTION_RE, ''));
+}
+// 完成态词素按句核对：只要存在「无过去指涉的完成态句」即视为本轮伪造声明；
+// 全部带过去指涉 = 对既往工作的引用，放行。引号内内容先剥离（提及≠声明，dev.4）。
+// claimSentences 同时供台账留痕（dev.5）：误判事后校准需要命中原句
+function claimSentences(text, claimRe) {
+  return String(text || '').split(/[\n。！？；]/).filter(s => {
+    const bare = s.replace(/[「『][^」』]*[」』]/g, '');
+    return claimRe.test(bare) && !PAST_REF_RE.test(s);
+  }).map(s => s.slice(0, 160));
+}
+function hasUnanchoredClaim(text, claimRe) {
+  return claimSentences(text, claimRe).length > 0;
+}
+function claimsWrite(text, instruction) {
+  const t = String(text || '');
+  return instructionIsTask(instruction) && WRITE_CLAIM_RE.test(t)
+    && FILE_HINT_RE.test(t + '\n' + stripProhibitions(instruction))
+    && hasUnanchoredClaim(t, WRITE_CLAIM_RE);
+}
 function claimsRead(text, instruction) {
   const t = String(text || '');
-  return READ_CLAIM_RE.test(t) && FILE_CTX_RE.test(t + '\n' + String(instruction || ''));
+  return instructionIsTask(instruction) && READ_CLAIM_RE.test(t)
+    && FILE_CTX_RE.test(t + '\n' + stripProhibitions(instruction))
+    && hasUnanchoredClaim(t, READ_CLAIM_RE);
+}
+function claimsSearch(text, instruction) {
+  const t = String(text || '');
+  return instructionIsTask(instruction) && SEARCH_CLAIM_RE.test(t)
+    && SEARCH_INTENT_RE.test(stripProhibitions(instruction))
+    && hasUnanchoredClaim(t, SEARCH_CLAIM_RE);
 }
 
 const activeRuns = new Map(); // reqId -> abort()
@@ -99,7 +181,7 @@ async function startRun(opts) {
   });
 
   let tracer = null;
-  let executedTools = 0, executedWrites = 0, executedReads = 0, writeDenials = 0, progressSeen = 0;
+  let executedTools = 0, executedWrites = 0, executedReads = 0, executedSearches = 0, writeDenials = 0, progressSeen = 0;
   let firstRoundRequestedTools = false, retries = 0, lengthRetries = 0;
   const denyStreak = new Map(); // 归一化路径 -> 连续拒绝次数
 
@@ -223,7 +305,9 @@ async function startRun(opts) {
     let result, ok = true;
     try {
       if (tool.permission === 'write') tracer.captureBeforeWrite(args.path);
-      result = await tools.invoke(tc.name, args);
+      // ctx：web_search 出口层需要 runId/reqId 关联台账、instruction 做轨道存疑启发式、
+      // step 发「已开启/达日限」notice、permTimeout 授权卡超时（spec D3/§5.2）
+      result = await tools.invoke(tc.name, args, { runId, reqId: o.reqId, instruction: o.instruction, permTimeoutSec: permTimeout, step });
       if (tool.permission === 'write') { tracer.recordToolWrite(args.path); executedWrites++; }
       executedTools++;
     } catch (e) {
@@ -232,9 +316,13 @@ async function startRun(opts) {
       logger.warn('agent 工具执行失败: ' + tc.name + ' → ' + (e.userMsg || e.message));
     }
     if (ok && tc.name === 'read_file') executedReads++;
+    // 成功检索 = handler 正常返回且业务 ok（被拦/被拒/失败的调用不算「查过」）
+    if (ok && tc.name === 'web_search' && result && result.ok !== false) executedSearches++;
     const summary = tool.permission === 'write'
       ? `${args.path}（${Buffer.byteLength(String(args.content ?? ''), 'utf8')}B）`
-      : String(args.path || Object.values(args).find(v => typeof v === 'string' && v.trim()) || tc.name).slice(0, 60);
+      : tc.name === 'web_search'
+        ? `${String(args.query || '').slice(0, 40)}（${args.track === 'autonomous' ? '自主轨' : '指定轨'}）`
+        : String(args.path || Object.values(args).find(v => typeof v === 'string' && v.trim()) || tc.name).slice(0, 60);
     step({ kind: 'tool', tool: tc.name, summary, ok });
     return { ok, content: jstr(result, tools.RESULT_CAPS[tc.name] || 4000) };
   }
@@ -249,12 +337,14 @@ async function startRun(opts) {
       record.changed = changes;
       pushArtifact(changes);
     }
-    // 幻觉兜底：重试预算耗尽后正文仍声称已写入/已读取，而本 run 实际零成功写入/零 read_file →
-    // 附加系统核实说明一起存史/送达，绝不让「假完成」单独流向用户
+    // 幻觉兜底：重试预算耗尽后正文仍声称已写入/已读取/已检索，而本 run 实际零成功写入/零 read_file/
+    // 零成功 web_search → 附加系统核实说明一起存史/送达，绝不让「假完成」单独流向用户
     if (mode !== 'read' && executedWrites === 0 && changes.length === 0 && claimsWrite(fl.clean, o.instruction)) {
       fl.clean += '\n\n（系统核实：本次任务没有实际写入任何文件，上文关于已写入的表述与事实不符。）';
     } else if (executedReads === 0 && claimsRead(fl.clean, o.instruction)) {
       fl.clean += '\n\n（系统核实：本次任务没有实际读取任何文件，上文对所谓文件内容的转述与事实不符，不可采信。）';
+    } else if (executedSearches === 0 && claimsSearch(fl.clean, o.instruction)) {
+      fl.clean += '\n\n（系统核实：本次对话没有执行任何联网检索，上文关于网络资料/检索结果的表述与事实不符，不可采信。）';
     }
     const extra = await o.onFinal(fl);
     record.finalReply = fl.clean;
@@ -313,22 +403,28 @@ async function startRun(opts) {
         }
 
         // 假完成检测：任务型判定（首轮请求过工具或正文含进展标记）却零工具执行 → 一次有界重试。
-        // 声称已写入/已读取检测：正文用完成态汇报写入/读取但实际零成功写入/read_file（实测 run19/21：
+        // 声称已写入/已读取/已检索检测：正文用完成态汇报写入/读取/检索但实际零成功记录（实测 run19/21：
         // 模型不请求工具、不带进展标记，纯靠叙述「先列目录…继续读…我读完了/笔录落盘了」伪装执行）
         // → 共用同一次重试预算，分别注入针对性纠正指令。
         // 写入曾被用户拒绝的情况不算（用户已介入，模型知情），避免无意义重试。
         const taskLike = firstRoundRequestedTools || progressSeen > 0;
         const writeClaim = mode !== 'read' && executedWrites === 0 && claimsWrite(res.content, o.instruction);
         const readClaim = executedReads === 0 && claimsRead(res.content, o.instruction);
-        const claimKind = writeClaim ? 'write' : readClaim ? 'read' : null;
+        const searchClaim = executedSearches === 0 && claimsSearch(res.content, o.instruction);
+        const claimKind = writeClaim ? 'write' : readClaim ? 'read' : searchClaim ? 'search' : null;
         if (((taskLike && executedTools === 0) || claimKind) && writeDenials === 0 && retries === 0 && !overCap) {
           retries = 1; record.retries = 1;
           const noticeText = claimKind === 'write' ? '检测到声称已写入但没有成功写入记录，自动重试一轮（1/1）'
             : claimKind === 'read' ? '检测到声称已读取但没有任何成功的文件读取，自动重试一轮（1/1）'
+            : claimKind === 'search' ? '检测到声称已检索但没有任何成功的联网检索，自动重试一轮（1/1）'
             : '检测到未执行工具即声称完成，自动重试一轮（1/1）';
-          step({ kind: 'notice', notice: 'retry', text: noticeText });
+          // 命中句留痕（dev.5）：台账不存中间轮原文，误判事后无法校准（本次画像事故
+          // 就因缺第一轮原文而难以归因）——把命中的完成态原句（截断）写进 notice step
+          const claimRe = claimKind === 'write' ? WRITE_CLAIM_RE : claimKind === 'read' ? READ_CLAIM_RE : SEARCH_CLAIM_RE;
+          step({ kind: 'notice', notice: 'retry', text: noticeText,
+            ...(claimKind ? { evidence: claimSentences(res.content, claimRe).slice(0, 3) } : {}) });
           pipeline.reset(); // 管线与渲染层正文同步清空，重试轮从零开始
-          const claimMsg = claimKind === 'write' ? CLAIM_MSG : claimKind === 'read' ? READ_CLAIM_MSG : FAKE_DONE_MSG;
+          const claimMsg = claimKind === 'write' ? CLAIM_MSG : claimKind === 'read' ? READ_CLAIM_MSG : claimKind === 'search' ? SEARCH_CLAIM_MSG : FAKE_DONE_MSG;
           toolTurns.push(
             { role: 'assistant', content: res.content || '', ...(res.reasoning ? { reasoning_content: res.reasoning } : {}) },
             { role: 'system', content: claimMsg },
@@ -381,4 +477,10 @@ function abortRun(reqId) {
 
 function hasRun(reqId) { return activeRuns.has(reqId); }
 
-module.exports = { startRun, abortRun, hasRun };
+// 测试钩子：SEARCH/WRITE/READ_CLAIM 词表与豁免逻辑校准回灌用（v0.3.5 实测校准法）
+function _claimsSearch(text, instruction) { return claimsSearch(text, instruction); }
+function _claimsWrite(text, instruction) { return claimsWrite(text, instruction); }
+function _claimsRead(text, instruction) { return claimsRead(text, instruction); }
+function _instructionIsTask(instruction) { return instructionIsTask(instruction); }
+
+module.exports = { startRun, abortRun, hasRun, _claimsSearch, _claimsWrite, _claimsRead, _instructionIsTask };

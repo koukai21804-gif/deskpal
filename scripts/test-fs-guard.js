@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 process.env.DESKPAL_TEST = '1';
-const guard = require('fs').realpathSync(__dirname + '/..').endsWith('deskpal')
+const guard = require('fs').realpathSync(__dirname + '/..').split(/[\\/]/).pop().startsWith('deskpal')
   ? require(path.join(__dirname, '..', 'src', 'main', 'services', 'fs-guard.js'))
   : null;
 if (!guard) { console.error('FAIL: 无法加载 fs-guard'); process.exit(1); }
@@ -36,8 +36,12 @@ assert('普通 txt 可读', guard.canRead('D:\\docs\\paper.txt') === true);
 assert('用户目录普通文件可读', guard.canRead('C:\\Users\\x\\Documents\\a.docx') === true);
 
 console.log('== 写白名单 ==');
-assert('userData 可写', guard.canWrite(path.join(tmpUserData, 'config', 'settings.json')) === true);
+assert('userData 可写（普通路径）', guard.canWrite(path.join(tmpUserData, 'notes', 'x.md')) === true);
 assert('userData/temp 可写', guard.canWrite(path.join(tmpUserData, 'temp', 'x.bin')) === true);
+assert('config/ 应用配置拒写（R5：配置只经设置页/store 通道变更）', guard.canWrite(path.join(tmpUserData, 'config', 'settings.json')) === false);
+assert('审计台账拒写（agent/runs.jsonl，R5）', guard.canWrite(path.join(tmpUserData, 'agent', 'runs.jsonl')) === false);
+assert('搜索台账拒写（websearch/ledger.jsonl，R5）', guard.canWrite(path.join(tmpUserData, 'websearch', 'ledger.jsonl')) === false);
+assert('身份档案拒写（user/profile.json，开发版）', guard.canWrite(path.join(tmpUserData, 'user', 'profile.json')) === false);
 assert('安装目录外不可写', guard.canWrite('C:\\Windows\\system32\\evil.dll') === false);
 assert('用户桌面不可写', guard.canWrite('C:\\Users\\x\\Desktop\\note.txt') === false);
 assert('路径穿越不可写', guard.canWrite(path.join(tmpUserData, 'temp', '..', '..', 'escape.txt')) === false);

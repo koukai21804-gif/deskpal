@@ -324,11 +324,11 @@ section('用例 7b：read 模式——write 工具不下发 + 兜底拦截');
 section('用例 8：finishReason=length 截断重试与分段写入');
 {
   store.set('settings', { agent: { permissionMode: 'userData' } }); // 数据目录直写，聚焦截断逻辑
-  const doc = path.join(TMP, 'TOH-doc.md');
+  const doc = path.join(TMP, 'proj-doc.md');
   llmScript = [
     { content: '先看一眼目录。', toolCalls: [{ id: 'c1', name: 'list_dir', argsRaw: JSON.stringify({ path: TMP }) }], finishReason: 'tool_calls' },
     // 复现实测：叙述「我把文档写进数据目录根」+ write_file 参数超长被 max_tokens 腰斩
-    { content: '我把文档写进数据目录根，命名 TOH-doc.md。内容按 front-matter → 背景 → TODO 组织。', finishReason: 'length' },
+    { content: '我把文档写进数据目录根，命名 proj-doc.md。内容按 front-matter → 背景 → TODO 组织。', finishReason: 'length' },
     { content: '分段写。', toolCalls: [{ id: 'c2', name: 'write_file', argsRaw: JSON.stringify({ path: doc, content: '# part1\n', reason: '文档第一段' }) }], finishReason: 'tool_calls' },
     { content: '续段。', toolCalls: [{ id: 'c3', name: 'write_file', argsRaw: JSON.stringify({ path: doc, content: '# part2\n', reason: '文档第二段追加', append: 'true' }) }], finishReason: 'tool_calls' },
     { content: '两段都写进去了，任务完成。[情绪:开心]', finishReason: 'stop' },
@@ -336,7 +336,7 @@ section('用例 8：finishReason=length 截断重试与分段写入');
   permDecision = 'allow_once';
   llmCalls = [];
   await loop.startRun({
-    reqId: 'chat_e2e_8', instruction: '写 TOH 迭代文档', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_8', instruction: '写项目迭代文档', baseMessages: baseMsgs(),
     onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '8 不应 error: ' + e.message); },
   });
   ok(fs.existsSync(doc) && fs.readFileSync(doc, 'utf8') === '# part1\n# part2\n', '截断重试后真实写入（覆盖+append 追加）');
@@ -402,7 +402,7 @@ section('用例 9b：顽固幻觉 → 系统核实注记');
 section('用例 10：save_memory 落库长期记忆（「记下了」变成真的）');
 {
   llmScript = [
-    { content: '我把这点固化下来。', toolCalls: [{ id: 'c1', name: 'save_memory', argsRaw: JSON.stringify({ content: '用户偏好纯思辨性哲学探讨，非项目焦虑', importance: '4', type: 'preference' }) }], finishReason: 'tool_calls' },
+    { content: '我把这点固化下来。', toolCalls: [{ id: 'c1', name: 'save_memory', argsRaw: JSON.stringify({ content: '用户偏好简洁直接的沟通风格（测试记忆）', importance: '4', type: 'preference' }) }], finishReason: 'tool_calls' },
     { content: '记下了，这次真的写进长期记忆了。[情绪:开心]', finishReason: 'stop' },
   ];
   llmCalls = [];
@@ -412,7 +412,7 @@ section('用例 10：save_memory 落库长期记忆（「记下了」变成真�
     onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '10 不应 error: ' + e.message); },
   });
   const memItems = store.get('memory/roleplay').items;
-  ok(memItems.some(i => i.content === '用户偏好纯思辨性哲学探讨，非项目焦虑' && i.type === 'preference' && i.importance === 4), '记忆真实入库（内容/类型/重要性归一）');
+  ok(memItems.some(i => i.content === '用户偏好简洁直接的沟通风格（测试记忆）' && i.type === 'preference' && i.importance === 4), '记忆真实入库（内容/类型/重要性归一）');
   const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_10');
   ok(rec && rec.status === 'done', 'run 正常收尾');
   const toolStep = rec.steps.find(s => s.kind === 'tool' && s.tool === 'save_memory');
@@ -484,7 +484,7 @@ section('用例 13：顽固虚假读取 → 兜底注记（复现 run20 重试�
   llmCalls = [];
   let finalFl = null;
   await loop.startRun({
-    reqId: 'chat_e2e_13', instruction: '看一下 docs\\log 里的测评报告再总结', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_13', instruction: '看一下数据目录 temp 里的报告再总结', baseMessages: baseMsgs(),
     onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '13 不应 error: ' + e.message); },
   });
   ok(finalFl && finalFl.clean.includes('系统核实：本次任务没有实际读取任何文件'), '读取兜底注记附加（不单独放行虚假读取）');

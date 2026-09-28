@@ -18,6 +18,9 @@ const scheduler = require('./services/schedule/scheduler');
 const scheduleParser = require('./services/schedule/parser');
 const scheduleExcel = require('./services/schedule/excel');
 const memory = require('./services/memory');
+const userProfile = require('./services/user-profile');
+const searchLedger = require('./services/agent/search-ledger');
+const netSearch = require('./services/agent/net-search');
 
 function handle(channel, handler) {
   ipcMain.handle(channel, async (e, arg = {}) => {
@@ -143,6 +146,10 @@ function registerIpc() {
       const api = store.get('api');
       return { ...api, apiKeyEnc: undefined, hasKey: !!api.apiKeyEnc };
     }
+    if (name === 'search') {
+      const s = store.get('search');
+      return { ...s, searchKeyEnc: undefined, hasKey: !!s.searchKeyEnc }; // R4：密文不进渲染层
+    }
     return store.get(name);
   });
   handle('store:set', ({ name, patch }) => {
@@ -198,8 +205,12 @@ function registerIpc() {
   handle('chat:send', async ({ tab, text }) => {
     if (!['roleplay', 'quick'].includes(tab)) throw new Error('未知聊天标签');
     if (!String(text || '').trim()) throw new Error('消息不能为空');
-    // 记忆管理斜杠命令兜底守卫：不入史、不计数、不进 LLM（渲染层拦截失效时这里兜住）
-    if (tab === 'roleplay' && memory.isMemoryCommand(text)) return { memoryCommand: true };
+    // 斜杠命令兜底守卫：不入史、不计数、不进 LLM（渲染层拦截失效时这里兜住）
+    if (tab === 'roleplay') {
+      if (memory.isMemoryCommand(text)) return { memoryCommand: true };
+      if (userProfile.isProfileCommand(text)) return { profileCommand: true };
+      if (searchLedger.isLedgerCommand(text)) return { ledgerCommand: true };
+    }
     chat.bumpUserCount(tab);
     return chat.send(tab, String(text).trim());
   });
@@ -218,6 +229,42 @@ function registerIpc() {
   handle('memory:list', async () => { await chat.flushMemory(); return memory.listMemories(); });
   handle('memory:add', (payload) => memory.addMemory(payload));
   handle('memory:delete', ({ id }) => memory.deleteMemory(id));
+
+  // ---------- 用户身份档案（开发版 /user profile 面板；角色无感知） ----------
+  // 打开面板 = 强制补漂移一次（≥2 条新消息才跑，空转不烧调用），与记忆面板同款节奏
+  handle('profile:get', async () => { await userProfile.tick(true).catch(() => {}); return userProfile.get(); });
+  handle('profile:save', ({ doc }) => userProfile.saveDoc(doc || {}));
+  handle('profile:revert', ({ id }) => userProfile.revert(String(id || '')));
+  // 预填导入（面板选择种子 JSON 文件；fill-empty 合并，已有值一律保留）。
+  // 文件由主进程读取（渲染层 fetch file:// 被 Chromium 拦截），读前过 fs-guard 敏感路径校验。
+  const fsGuard = require('./services/fs-guard');
+  handle('profile:seed-file', ({ path: p }) => {
+    const file = String(p || '');
+    if (!file.endsWith('.json')) throw new Error('请选择 .json 种子文件');
+    if (!fsGuard.canRead(file)) throw new Error('没有权限读取该文件（敏感路径）');
+    let seed;
+    try { seed = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { throw new Error('种子文件不是合法 JSON：' + e.message); }
+    if (!seed || typeof seed !== 'object') throw new Error('种子文件内容无效');
+    return userProfile.applySeed(seed);
+  });
+
+  // ---------- 联网搜索（开发版：账本面板 + 设置页供应商配置，spec §9.3） ----------
+  handle('search:ledger', ({ range, track }) => searchLedger.query({ range, track }));
+  handle('search:verdict', ({ id, verdict }) => {
+    if (!['accepted', 'rejected'].includes(verdict)) throw new Error('verdict 只能是 accepted 或 rejected');
+    const e = searchLedger.update(String(id || ''), { verdict, verdictAt: new Date().toISOString() });
+    if (!e) throw new Error('找不到这条账本记录');
+    return { ok: true };
+  });
+  // 搜索源凭证（R4：key 经 safeStorage 加密，store:get 'search' 返回时剥密文）
+  handle('search:save-key', ({ key }) => netSearch.saveKey(String(key || '')));
+  handle('search:test', (opts) => netSearch.testConnection(opts || {}));
+  handle('search:providers', () => netSearch.listProviders());
+  // 账本增量刷新：面板开着时每次落账推送一次（spec §8）
+  searchLedger.setChangeListener(() => {
+    const win = windows.getWindow('chat');
+    if (win) { try { win.webContents.send('search:ledger-changed', {}); } catch (_) {} }
+  });
 
   // ---------- 启动器 ----------
   handle('launcher:match', ({ text }) => launcher.match(text));

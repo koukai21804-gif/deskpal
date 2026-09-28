@@ -4,7 +4,8 @@ const fs = require('fs');
 const tools = require('../src/main/services/agent/builtin');
 
 (async () => {
-  const p = process.argv[2] || 'C:/Users/kokai/Downloads/toh-debate-chat_mucwoimb-2026-09-22.txt';
+  const p = process.argv[2];
+  if (!p) { console.error('用法：node scripts/test-readfile-chunks.js <文本文件路径>'); process.exit(2); }
   const full = fs.readFileSync(p, 'utf8');
   const total = full.length;
 

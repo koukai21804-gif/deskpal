@@ -1,10 +1,11 @@
-// 内置工具：read_file / list_dir / write_file（全部经 fs-guard 仲裁）
+// 内置工具：read_file / list_dir / write_file / save_memory / web_search（全部经 fs-guard 仲裁）
 // write_file 的用户批准由 loop 的权限闸统一拦截（H1.4）；handler 内 fs-guard 校验保留作双保险。
 const guard = require('../fs-guard');
 const memory = require('../memory');
 const fs = require('fs');
 const path = require('path');
 const tools = require('./tools');
+const netSearch = require('./net-search');
 
 // read_file 分段读取：大文件单段回填会把上下文撑爆，也可能被结果上限截掉而模型不知情。
 // 返回体自带已读区间与续读 offset，与 write_file 的分段追加（append:"true"）对称。
@@ -60,8 +61,25 @@ tools.register({
 });
 
 // 各工具回填给模型的结果上限（字符），loop 侧 jstr 按工具名取用。
-// read_file 段内自截且带续读标记，上限放宽到能容纳满段；其余工具保持保护性 4000。
-tools.RESULT_CAPS = { read_file: 40000 };
+// read_file 段内自截且带续读标记，上限放宽到能容纳满段；web_search 返回体自截（§5.5），
+// 预留引号/转义余量；其余工具保持保护性 4000。
+tools.RESULT_CAPS = { read_file: 40000, web_search: 12000 };
+
+// web_search：联网检索出口的唯一接口（spec §5）。工具常下发（quick 管线无 agent 段天然不含），
+// 开关/授权/轨道/日限/冷却闸全部在 handler 内（§5.2 决策表），loop 不做过滤。
+tools.register({
+  name: 'web_search',
+  desc: '联网搜索公开网络信息。功能默认关闭：仅当用户明确要求查资料/搜索时可发起（首次调用会向用户弹授权卡开启）；自主补充检索（track=autonomous）须经用户逐次批准。结果须标注来源，查不到就如实说，不要编造，不得未经用户要求把检索结果写入文件',
+  params: {
+    query: 'string 检索词（≤120字，不得包含任何个人信息/手机号/邮箱/本机路径）',
+    track: 'string designated=用户明确要求的检索；autonomous=你主动补充的检索（会先弹批准卡）',
+    reason: 'string ≤60字：为什么发起这次检索、对用户可能有什么用（两种轨道都必填）',
+    maxResults: 'string 可选：返回条数 1-8，默认 5',
+  },
+  permission: 'read',
+  enabled: true,
+  handler: async (args, ctx) => netSearch.execute(args, ctx),
+});
 
 tools.register({
   name: 'list_dir',

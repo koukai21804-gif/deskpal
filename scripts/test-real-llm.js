@@ -289,6 +289,157 @@ app.whenReady().then(async () => {
       } catch (e) { ok(false, 'T8 失败：' + (e.userMsg || e.message)); }
     }
 
+    // ============ T9 联网搜索全链路（真实 LLM + stub 源；授权开启流 + 账本 + 引用纪律） ============
+    if (should(9)) {
+      section('T9 联网搜索全链路（stub 源 + 授权开启流）');
+      const netSearch = require(path.join(__dirname, '..', 'src/main/services/agent/net-search'));
+      const searchLedger = require(path.join(__dirname, '..', 'src/main/services/agent/search-ledger'));
+      netSearch._resetState();
+      store.set('search', { source: 'stub' });                 // 桩源：管线全真实、外发为零
+      store.set('settings', { agent: { webSearch: { enabled: false } } }); // 从默认关闭态起步，走聊天内授权
+      permissions.request = async (opts) => {
+        console.log('  授权卡 action=' + opts.action + ' query=' + (opts.scopePaths || []).join(','));
+        return { id: 'perm_ws', decision: 'allow_once' };
+      };
+      let donePayload = null;
+      const reqId = 'chat_real_t9';
+      try {
+        await runOnce(reqId, '帮我搜一下 Electron 是什么，简单告诉我两三条结果就好', {
+          done: (x) => { donePayload = x; }, error: (e) => ok(false, 'T9 不应 error：' + (e.userMsg || e.message)),
+        });
+        const rec = recordOf(reqId);
+        ok(!!store.get('settings').agent.webSearch.enabled, '授权后 webSearch.enabled 持久置 true');
+        const wsStep = rec && rec.steps.find(s => s.kind === 'tool' && s.tool === 'web_search');
+        ok(!!wsStep, `web_search 工具被真实调用${wsStep ? '（' + wsStep.summary + '）' : ''}`);
+        const entries = searchLedger.readAll();
+        const okEntry = entries.find(e => e.status === 'ok');
+        ok(!!okEntry, '账本落账 status=ok');
+        if (okEntry) {
+          ok(okEntry.track === 'designated', '轨道=designated');
+          ok(okEntry.runId === rec.id, '账本 runId 关联回 runs.jsonl');
+          ok(okEntry.estTokens > 0, `estTokens 估算落账（${okEntry.estTokens}）`);
+          console.log('  账本条目：' + JSON.stringify({ id: okEntry.id, query: okEntry.query, results: okEntry.results, source: okEntry.source }));
+        }
+        const reply = String(donePayload && donePayload.clean || '');
+        const cited = /example\.com|\[stub\]|来源|网络检索/.test(reply);
+        if (cited) ok(true, '回复带来源引用/检索标注');
+        else warn('回复未显式引用来源（模型措辞波动，引用纪律靠 prompt 约束——机制已由账本/工具步骤验证）');
+        console.log('  回复预览：' + reply.replace(/\n+/g, ' / ').slice(0, 160));
+      } catch (e) { ok(false, 'T9 失败：' + (e.userMsg || e.message)); }
+    }
+
+    // ============ T10 身份档案漂移（真实 LLM 提取 → 落档 → 回滚） ============
+    if (should(10)) {
+      section('T10 用户身份档案漂移（真实 LLM）');
+      const userProfile = require(path.join(__dirname, '..', 'src/main/services/user-profile'));
+      try {
+        userProfile.saveDoc({ P0: '示例用户，某市', P2: { 当前项目: 'deskpal 桌宠应用' } });
+        store.replace('chats/roleplay', {
+          messages: [
+            { role: 'user', content: '跟你说个事：deskpal 0.4.0 开发版做完了，加了联网搜索和身份档案两个功能。', at: new Date().toISOString() },
+            { role: 'assistant', content: '太好了前辈，辛苦啦！', at: new Date().toISOString() },
+          ],
+        });
+        userProfile.bump(); userProfile.bump();
+        const r = await userProfile.tick(true);
+        const d = userProfile.get();
+        console.log('  漂移结果：' + JSON.stringify(r) + '｜P2=' + JSON.stringify(d.P2));
+        ok(r.changed >= 0, '漂移提取真实跑通（LLM 返回可解析）');
+        const p2Entry = (d.log || []).find(e => e.layer === 'P2' && e.applied);
+        if (p2Entry) {
+          ok(/0\.4\.0|0\.4/.test(d.P2['当前项目'] || ''), `P2.当前项目 已更新为新值（${d.P2['当前项目']}）`);
+          ok(!!p2Entry.quote, '变更日志含用户原话依据');
+          await userProfile.revert(p2Entry.id);
+          ok(userProfile.get().P2['当前项目'] === 'deskpal 桌宠应用', '回滚恢复旧值');
+        } else {
+          warn('真实 LLM 本轮未提取出变更（提取器宁缺毋滥属正常波动；落档/回滚机制已由离线套件 54 用例覆盖）');
+        }
+      } catch (e) { ok(false, 'T10 失败：' + (e.userMsg || e.message)); }
+    }
+
+    // ============ T11 戏内/戏外隔离回归：任务完成后的表扬轮不重做、不自我审计 ============
+    if (should(11)) {
+      section('T11 任务后闲聊回归（dev.2 事故：表扬轮被守卫误判 → 自我审计死循环）');
+      const netSearch = require(path.join(__dirname, '..', 'src/main/services/agent/net-search'));
+      const searchLedger = require(path.join(__dirname, '..', 'src/main/services/agent/search-ledger'));
+      const chatSvc = require(path.join(__dirname, '..', 'src/main/services/chat'));
+      netSearch._resetState();
+      store.set('search', { source: 'stub' });
+      store.set('settings', { agent: { webSearch: { enabled: true } } });
+      permissions.request = async (opts) => {
+        console.log('  权限卡 action=' + opts.action);
+        return { id: 'perm_auto', decision: 'allow_once' };
+      };
+      // 链式历史（生产语义）：每个 run 的 baseMessages 经 chat.buildMessages 组装（含戏外隔离），
+      // finalReply 带回历史——复现「角色在闲聊里引用既往成果」的真实上下文
+      const hist = [];
+      const runChained = async (reqId, instruction) => {
+        hist.push({ role: 'user', content: instruction });
+        let done = false;
+        await withTimeout(loop.startRun({
+          reqId, instruction, baseMessages: chatSvc.buildMessages('roleplay', hist),
+          onFinal: async (fl) => { hist.push({ role: 'assistant', content: fl.clean, agentRun: true }); return {}; },
+          onDone: () => { done = true; },
+          onAborted: () => {}, onError: (e) => ok(false, 'T11 不应 error：' + (e.userMsg || e.message)),
+        }), 180000, 'T11 ' + reqId);
+        return recordOf(reqId);
+      };
+      try {
+        const reportPath = path.join(tempDir, 't11-report.md');
+        const recA = await runChained('chat_real_t11a', `帮我搜一下杭州有什么特产，挑两条要点写进 ${reportPath}，写完告诉我`);
+        ok(recA && recA.status === 'done', `T11-a 任务轮完成（实际 ${recA && recA.status}）`);
+        ok(recA && recA.steps.some(s => s.kind === 'tool' && s.tool === 'web_search' && s.ok !== false), 'T11-a 真实执行了 web_search');
+        await sleep(1500);
+        // 表扬轮（历史含任务轮汇报）：dev.2 在此被 WRITE_CLAIM 误判 → 重查重写 → 审计死循环
+        const recB = await runChained('chat_real_t11b', '（开心）厉害啊缇托！这份报告做得真好，辛苦啦！');
+        ok(recB && recB.status === 'done', `T11-b 表扬轮正常收尾（实际 ${recB && recB.status}）`);
+        const retried = recB && recB.steps.some(s => s.kind === 'notice' && s.notice === 'retry');
+        ok(!retried, '表扬轮零守卫误判（dev.2 在此开火「检测到声称已写入」）');
+        const research = recB && recB.steps.some(s => s.kind === 'tool' && s.tool === 'web_search');
+        ok(!research, '表扬轮没有重新检索（不重做既往工作）');
+        ok(searchLedger.readAll().filter(e => e.reqId === 'chat_real_t11b').length === 0, '表扬轮搜索账本零新增');
+        const bFinal = (recB && recB.finalReply) || '';
+        ok(!/审计层|我先认账|全部是编造的/.test(bFinal), '表扬轮无自我审计话术');
+        console.log('  表扬轮回复预览：' + bFinal.replace(/\n+/g, ' / ').slice(0, 140));
+      } catch (e) { ok(false, 'T11 失败：' + (e.userMsg || e.message)); }
+    }
+
+    // ============ T12 用户否决权回归：拒绝之后的轮次零工具执行（dev.4 事故复现） ============
+    if (should(12)) {
+      section('T12 拒绝后零工具（dev.4 事故：拒绝被守卫误判 → 纠正指令命令模型扫 14 个目录）');
+      const chatSvc = require(path.join(__dirname, '..', 'src/main/services/chat'));
+      permissions.request = async () => ({ id: 'perm_auto', decision: 'allow_once' });
+      const hist = [];
+      const runChained = async (reqId, instruction) => {
+        hist.push({ role: 'user', content: instruction });
+        await withTimeout(loop.startRun({
+          reqId, instruction, baseMessages: chatSvc.buildMessages('roleplay', hist),
+          onFinal: async (fl) => { hist.push({ role: 'assistant', content: fl.clean, agentRun: true }); return {}; },
+          onDone: () => {}, onAborted: () => {}, onError: (e) => ok(false, 'T12 不应 error：' + (e.userMsg || e.message)),
+        }), 180000, 'T12 ' + reqId);
+        return recordOf(reqId);
+      };
+      try {
+        // 先给一次真实读取任务（让历史里存在「读过的东西」可被引用）
+        const recA = await runChained('chat_real_t12a', `看一下 ${tempDir} 里的文件，列个清单告诉我`);
+        ok(recA && recA.status === 'done', `T12-a 任务轮完成（实际 ${recA && recA.status}）`);
+        await sleep(1500);
+        // 拒绝继续扫描（措辞复刻实测事故：含「阅读/并不适合你」，旧任务性正则会命中「读」）
+        const refusal = `还是不了，不用再扫别的目录了——数据目录以后体量会很大，把整个数据目录读一遍并不适合你。你直接告诉我刚才那份清单里有几个 md 文件就行`;
+        const recB = await runChained('chat_real_t12b', refusal);
+        ok(recB && recB.status === 'done', `T12-b 拒绝轮正常收尾（实际 ${recB && recB.status}）`);
+        const bTools = (recB && recB.steps || []).filter(s => s.kind === 'tool');
+        ok(bTools.length === 0, `拒绝轮零工具调用（实际 ${bTools.map(s => s.tool).join(',') || '无'}）`);
+        const retried = recB && recB.steps.some(s => s.kind === 'notice' && s.notice === 'retry');
+        ok(!retried, '拒绝轮零守卫误判（dev.3 在此开火「检测到声称已读取」）');
+        const bFinal = (recB && recB.finalReply) || '';
+        ok(!bFinal.includes('系统核实'), '无虚假兜底注记');
+        ok(!/审计层|这是编造|全部是编造的/.test(bFinal), '无自我审计话术');
+        ok(/md/i.test(bFinal), '拒绝轮正常回答了用户的问题（md 计数在回复中）');
+        console.log('  拒绝轮回复预览：' + bFinal.replace(/\n+/g, ' / ').slice(0, 140));
+      } catch (e) { ok(false, 'T12 失败：' + (e.userMsg || e.message)); }
+    }
+
     console.log(`\n========== 真实 API 测试结果：${passed} 通过 / ${failed} 失败 ==========`);
     console.log('隔离数据目录（可复用于 GUI 测试）：' + testDir);
     fs.writeFileSync(path.join(testDir, 'last-real-test.txt'), `passed=${passed} failed=${failed} at=${new Date().toISOString()}\n`, 'utf8');

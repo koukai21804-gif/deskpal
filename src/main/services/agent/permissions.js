@@ -11,9 +11,12 @@ function send(channel, data) {
   if (win) { try { win.webContents.send(channel, data); } catch (_) {} }
 }
 
-// 宠物气泡提醒（复用 pet:bubble；点击「去批准」聚焦聊天窗）
-function notifyPet() {
-  try { windows.broadcastAll('pet:bubble', { kind: 'perm-ask', text: '有个文件操作需要你批准' }); } catch (_) {}
+// 宠物气泡提醒（复用 pet:bubble；点击「去批准」聚焦聊天窗）。按 action 类型分支文案（spec §5.4）
+function notifyPet(action) {
+  const text = /联网|检索/.test(String(action || ''))
+    ? '缇托想自己上网查点东西，需要你批准'
+    : '有个文件操作需要你批准';
+  try { windows.broadcastAll('pet:bubble', { kind: 'perm-ask', text }); } catch (_) {}
 }
 
 // 发起权限请求；resolve 值为 {id, decision}，decision ∈ allow_once|deny|timeout|stopped（loop 只认 allow_once）
@@ -42,7 +45,7 @@ function request({ runId, reqId, tool, action, scopePaths, detail, reason, rever
     // 载荷顶层带 reqId（附录 C 契约）：渲染层用它与当前流式消息匹配，防止跨 run 串卡
     send('agent:permission', { tab: 'roleplay', reqId: req.reqId, request: req });
     logger.info(`[agent] 权限卡已发起 id=${id} reqId=${req.reqId || '-'} paths=${(scopePaths || []).join(',')} timeout=${timeoutSec}s`);
-    notifyPet();
+    notifyPet(action);
   });
 }
 

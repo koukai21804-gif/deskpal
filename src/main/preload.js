@@ -7,6 +7,7 @@ const PUSH_CHANNELS = [
   'pet:emotion', 'pet:bubble', 'pet:sleep', 'pet:ding', 'pet:say',
   'llm:chunk', 'llm:done', 'llm:error',
   'agent:step', 'agent:permission', 'agent:artifact', 'agent:done',
+  'search:ledger-changed',
   'reader:progress', 'reader:qa-chunk', 'reader:qa-done',
   'report:chunk', 'report:done',
   'schedule:remind', 'schedule:catchup', 'schedule:changed', 'schedule:prefill',
@@ -71,6 +72,19 @@ contextBridge.exposeInMainWorld('deskpal', {
   memoryList: () => invoke('memory:list', {}),
   memoryAdd: (item) => invoke('memory:add', item),
   memoryDelete: (id) => invoke('memory:delete', { id }),
+
+  // 用户身份档案（开发版 /user profile 面板）
+  profileGet: () => invoke('profile:get', {}),
+  profileSave: (doc) => invoke('profile:save', { doc }),
+  profileRevert: (id) => invoke('profile:revert', { id }),
+  profileSeed: (path) => invoke('profile:seed-file', { path }),
+
+  // 联网搜索（开发版：账本面板 + 设置页供应商配置）
+  searchLedger: (range, track) => invoke('search:ledger', { range, track }),
+  searchVerdict: (id, verdict) => invoke('search:verdict', { id, verdict }),
+  searchSaveKey: (key) => invoke('search:save-key', { key }),
+  searchTest: (opts) => invoke('search:test', opts || {}),
+  searchProviders: () => invoke('search:providers', {}),
 
   // 启动器
   launcherMatch: (text) => invoke('launcher:match', { text }),

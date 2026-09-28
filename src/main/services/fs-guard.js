@@ -25,6 +25,20 @@ const READ_BLACKLIST = [
   /wallet\.dat$/i,
 ];
 
+// 审计与身份档案拒写名单（spec R5，任何模式下拒绝，read 模式本就不许写）：
+//   agent/runs.jsonl      —— run 台账：模型可覆盖即等于「台账自证清白」
+//   websearch/ledger.jsonl —— 搜索账本：同上，且 verdict 只能经 UI 写入
+//   user/profile.json     —— 用户身份档案：绕过漂移日志直接改写身份认知
+//   config/ 前缀          —— 应用配置（settings/api/persona/search…）：配置只能经设置页/store 通道变更，
+//                             模型直写可换 LLM endpoint/密文等（提面），无任何合法使用场景
+// normalize 后为 小写正斜杠 的 userData 相对尾部匹配。
+const AUDIT_WRITE_SUFFIXES = [
+  '/agent/runs.jsonl',
+  '/websearch/ledger.jsonl',
+  '/user/profile.json',
+];
+const AUDIT_WRITE_DIR = '/config/';
+
 // full 模式写黑名单：核心系统目录（normalize 后为 小写正斜杠 盘符路径）
 const WRITE_FULL_BLACKLIST = [
   /^[a-z]:\/windows\b/i,
@@ -73,8 +87,12 @@ function canWrite(p) {
   const n = normalize(p);
   // 敏感文件（密码库/凭据/私钥等）任何模式下都不可写
   if (READ_BLACKLIST.some(re => re.test(n))) return false;
+  // 审计台账 / 身份档案 / 应用配置（R5）：userData 内但任何模式都拒写
   const u = normalize(userDataDir);
-  // userData 子树（含 temp）：userData/full 模式均可写
+  if (n.startsWith(u + '/') || n === u) {
+    const rel = n.slice(u.length); // '/agent/runs.jsonl' 这类相对尾部
+    if (AUDIT_WRITE_SUFFIXES.includes(rel) || rel.startsWith(AUDIT_WRITE_DIR)) return false;
+  }
   const inUserData = n === u || n.startsWith(u + '/');
   if (writeMode === 'read') return false;
   if (inUserData) return true;

@@ -9,6 +9,9 @@ const EMO_LABEL = { normal: '平常', happy: '开心', surprised: '惊讶', angr
 const SCHEDULE_RE = /^(提醒我|帮我记一下|记一下|添加日程|加个日程)/;
 // 斜杠命令：长期记忆管理面板（与主进程 memory.js 同款；角色无感知）
 const MEMORY_CMD_RE = /^\s*\/\s*deep\s+memory\s+forcing\s*$/i;
+// 斜杠命令：用户身份档案面板 / 搜索账本面板（开发版；与主进程同款正则，角色无感知）
+const PROFILE_CMD_RE = /^\s*\/\s*user\s+profile\s*$/i;
+const SEARCH_CMD_RE = /^\s*\/\s*search\s+ledger\s*$/i;
 
 let tab = 'roleplay';
 let streaming = null;           // { tab, reqId, el, raw, steps, changes, permTimers }
@@ -184,6 +187,12 @@ function mountScheduleConfirm(slot, m) {
 const PHASE_ICON = { 设计: '📐', 发现: '🔍', 能力: '🛠', 验证: '✅' };
 
 // 步骤时间线（progress + tool + permission + notice 共用；llm 轮只在台账、不上时间线）
+// notice 徽章按类型分化：重试类 🔄 / 搜索开启 🌐 / 搜索日限 📵
+function noticeBadge(n) {
+  if (n === 'search_enabled') return { icon: '🌐', label: '搜索' };
+  if (n === 'search_limit') return { icon: '📵', label: '日限' };
+  return { icon: '🔄', label: '重试' };
+}
 function renderTimeline(container, steps) {
   let box = container.querySelector('.agent-steps');
   if (!box) {
@@ -199,7 +208,7 @@ function renderTimeline(container, steps) {
       if (s.kind === 'progress') return `<div class="step"><span class="badge p">${PHASE_ICON[s.phase] || '•'} ${esc(s.phase || '')}</span><span>${esc(s.text || '')}</span></div>`;
       if (s.kind === 'tool') return `<div class="step"><span class="badge t">🔧 ${esc(s.tool || '')}</span><span class="${s.ok === false ? 'step-fail' : ''}">${esc(s.summary || '')}${s.ok === false ? ' ✗' : ' ✓'}</span></div>`;
       if (s.kind === 'permission') return `<div class="step"><span class="badge s">🛡 权限</span><span>${decisionText(s.decision)}</span></div>`;
-      if (s.kind === 'notice') return `<div class="step"><span class="badge n">🔄 重试</span><span>${esc(s.text || '')}</span></div>`;
+      if (s.kind === 'notice') { const nb = noticeBadge(s.notice); return `<div class="step"><span class="badge n">${nb.icon} ${nb.label}</span><span>${esc(s.text || '')}</span></div>`; }
       return '';
     }).join('')}</div>`;
 }
@@ -341,11 +350,12 @@ function renderAll() {
   scrollBottom();
 }
 
-// 保存到主进程时剥离仅存渲染层的附加数据（时间线/diff 归档在 agent/runs.jsonl，不进 chats）
+// 保存到主进程时剥离仅存渲染层的附加数据（时间线/diff 归档在 agent/runs.jsonl，不进 chats）。
+// agentRun 从 runId 派生保留：主进程据此在上下文里做戏外工作报告的摘要化隔离
 async function persistHistory(t) {
   const clean = histories[t].map(m => {
     const { steps, changes, runId, ...rest } = m;
-    return rest;
+    return runId ? { ...rest, agentRun: true } : rest;
   });
   await dp.chatSaveHistory(t, clean);
 }
@@ -357,12 +367,17 @@ async function send(text) {
   text = String(text ?? '').trim();
   if (!text || streaming) return;
 
-  // 0. 斜杠命令：长期记忆管理（仅角色扮演标签；不入史/不计数/不进 LLM，角色无感知）
-  if (tab === 'roleplay' && MEMORY_CMD_RE.test(text)) {
-    input.value = '';
-    autoGrow();
-    openMemoryManager();
-    return;
+  // 0. 斜杠命令：长期记忆 / 用户身份档案 / 搜索账本（仅角色扮演标签；不入史/不计数/不进 LLM，角色无感知）
+  if (tab === 'roleplay') {
+    if (MEMORY_CMD_RE.test(text)) {
+      input.value = ''; autoGrow(); openMemoryManager(); return;
+    }
+    if (PROFILE_CMD_RE.test(text)) {
+      input.value = ''; autoGrow(); openProfileManager(); return;
+    }
+    if (SEARCH_CMD_RE.test(text)) {
+      input.value = ''; autoGrow(); openSearchLedger(); return;
+    }
   }
 
   // 1. 本地启动器匹配（零 API）
@@ -580,6 +595,192 @@ async function openMemoryManager() {
   }
   await refresh();
 }
+
+// ---------- 用户身份档案面板（/user profile；角色无感知） ----------
+const LAYER_CN = { P1: 'P1 性格与相处', P2: 'P2 近况与工作', P3: 'P3 关系档案' };
+let profileModalBody = null;
+async function openProfileManager() {
+  const { body } = openModal({ title: '🪪 用户身份档案 · 角色无感知', width: '680px' });
+  profileModalBody = body;
+  body.innerHTML = '<p class="hint" style="padding:12px">加载中…（如有未漂移的新消息会先补跑一次提取）</p>';
+  let doc;
+  try { doc = await dp.profileGet(); } catch (err) { body.innerHTML = `<p class="hint">加载失败：${esc(errText(err))}</p>`; return; }
+  renderProfile(doc);
+
+  function kvRows(layer, obj) {
+    return Object.entries(obj || {}).map(([k, v]) => `
+      <div class="row prof-kv" data-layer="${layer}" style="gap:6px;margin:4px 0">
+        <input type="text" class="pf-key" value="${esc(k)}" maxlength="12" style="width:120px" placeholder="字段名">
+        <input type="text" class="pf-val" value="${esc(v)}" maxlength="240" style="flex:1" placeholder="内容">
+        <button class="btn btn-sm btn-icon" data-a="del-kv" title="删除">🗑</button>
+      </div>`).join('');
+  }
+
+  function renderProfile(d) {
+    body.innerHTML = `
+      <p class="hint" style="margin:4px 0 10px">「宠物对你的长期认知」档案，分层组织：P0=身份基座；P1=性格与相处（生理节奏/认知/价值动机/情绪关系/交互偏好）；P2=近况与工作（职业项目/经济结构）；P3=关系档案/元规则。待验证的猜测不写入（假设未验证不得当结论）。P1–P3 随角色扮演对话自动漂移更新（每 6 条消息提取一次），全部变更落在下方日志可回滚。每层上限 30 字段、单字段 240 字、P0 1200 字；注入 system prompt 带预算闸（超出按 P3→P2→P1 截断并注明）。面板操作不进聊天记录。</p>
+      <div class="row" style="gap:16px;margin-bottom:8px">
+        <label class="row" style="gap:6px"><input type="checkbox" id="pf-enabled" ${d.enabled !== false ? 'checked' : ''}> 注入角色上下文</label>
+        <label class="row" style="gap:6px"><input type="checkbox" id="pf-drift" ${d.drift !== false ? 'checked' : ''}> 允许对话漂移更新</label>
+      </div>
+      <div class="row" style="margin-bottom:8px">
+        <button class="btn btn-sm" id="pf-import">📥 导入预填文件（分层档案全量字段，只补空缺不覆盖）</button>
+        <span class="hint" id="pf-import-result"></span>
+      </div>
+      <div class="field"><span class="label">P0 身份锚（年龄/性别/所在地/学历/信仰/婚姻家庭/称呼体系等长期稳定事实，任何对话必须正确；漂移锁定，仅此处可编辑）</span>
+        <textarea id="pf-p0" rows="6" maxlength="1200" placeholder="示例：年龄段，所在地区，职业底色，家庭状况…（请按真实情况填写，仅保存在本机）">${esc(d.P0 || '')}</textarea></div>
+      ${['P1', 'P2', 'P3'].map(L => `
+        <div class="field" style="margin-top:10px"><span class="label">${LAYER_CN[L]}${L === 'P2' ? '（高频更新）' : ''}</span>
+          <div id="pf-${L}">${kvRows(L, d[L])}</div>
+          <button class="btn btn-sm" data-a="add-kv" data-layer="${L}">＋ 添加字段</button>
+        </div>`).join('')}
+      <div class="row" style="margin:14px 0 6px">
+        <button class="btn btn-primary btn-sm" id="pf-save">💾 保存档案</button>
+        <span class="hint grow" id="pf-saved"></span>
+      </div>
+      <h4 style="margin:10px 0 6px">变更日志（${(d.log || []).length}）</h4>
+      <div class="pf-log" style="max-height:240px;overflow:auto">
+        ${(d.log || []).slice().reverse().map(e => `
+          <div class="prof-log-item" style="padding:6px 0;border-bottom:1px dashed var(--dp-border);font-size:12px">
+            <div class="row" style="gap:6px;align-items:center">
+              <span class="badge ${e.source === 'drift' ? 'n' : 'p'}">${e.source === 'drift' ? '漂移' : e.source === 'user' ? '手动' : '回滚'}</span>
+              <b>${esc(e.layer)}.${esc(e.key)}</b>
+              ${e.applied ? '' : '<span class="hint">（未生效：' + esc(e.note || '') + '）</span>'}
+              ${e.revertedAt ? '<span class="hint">（已回滚）</span>' : ''}
+              <span class="grow"></span>
+              <span class="muted small">${esc(String(e.at || '').replace('T', ' ').slice(0, 16))}</span>
+            </div>
+            ${e.applied ? `<div class="row" style="gap:6px;margin-top:2px;flex-wrap:wrap"><span class="muted">旧：</span><span>${esc(e.old == null ? '（新增字段）' : e.old)}</span><span class="muted">→ 新：</span><span>${esc(e.new)}</span></div>` : ''}
+            ${e.quote ? `<div class="hint">依据：「${esc(e.quote)}」 · ${esc(e.reason || '')}</div>` : ''}
+            ${e.source === 'drift' && e.applied && !e.revertedAt ? `<button class="btn btn-sm" style="margin-top:4px" data-a="revert" data-id="${esc(e.id)}">↩ 回滚这条</button>` : ''}
+          </div>`).join('') || '<p class="hint" style="padding:8px 0">暂无变更。角色扮演聊天中出现的身份信息变化会自动漂移到这里。</p>'}
+      </div>`;
+
+    // 交互：加/删字段行
+    body.querySelectorAll('[data-a=add-kv]').forEach(btn => btn.addEventListener('click', () => {
+      const L = btn.dataset.layer;
+      const host = body.querySelector('#pf-' + L);
+      const row = document.createElement('div');
+      row.className = 'row prof-kv';
+      row.dataset.layer = L;
+      row.style.cssText = 'gap:6px;margin:4px 0';
+      row.innerHTML = `<input type="text" class="pf-key" maxlength="12" style="width:120px" placeholder="字段名"><input type="text" class="pf-val" maxlength="160" style="flex:1" placeholder="内容"><button class="btn btn-sm btn-icon" data-a="del-kv" title="删除">🗑</button>`;
+      host.appendChild(row);
+      row.querySelector('.pf-key').focus();
+    }));
+    body.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-a=del-kv]');
+      if (btn) btn.closest('.prof-kv').remove();
+    });
+    // 保存
+    body.querySelector('#pf-save').addEventListener('click', async () => {
+      const collectLayer = (L) => {
+        const out = {};
+        body.querySelectorAll(`.prof-kv[data-layer=${L}]`).forEach(row => {
+          const k = row.querySelector('.pf-key').value.trim(), v = row.querySelector('.pf-val').value.trim();
+          if (k && v) out[k] = v;
+        });
+        return out;
+      };
+      const doc2 = {
+        enabled: body.querySelector('#pf-enabled').checked,
+        drift: body.querySelector('#pf-drift').checked,
+        P0: body.querySelector('#pf-p0').value,
+        P1: collectLayer('P1'), P2: collectLayer('P2'), P3: collectLayer('P3'),
+        log: doc.log || [],
+      };
+      try {
+        const saved = await dp.profileSave(doc2);
+        doc = saved;
+        toast('档案已保存', 'ok');
+        renderProfile(saved); // 重渲染：清洗后的 key/value（超长截断等）立即可见
+      } catch (err) { toast(errText(err), 'error'); }
+    });
+    // 导入预填文件（分层档案全量字段；fill-empty：已有值一律保留；文件由主进程读取）
+    body.querySelector('#pf-import').addEventListener('click', async () => {
+      const p = await dp.pickFile({ title: '选择档案预填 JSON（本机种子文件，不入库不上传）', filters: [{ name: 'JSON', extensions: ['json'] }] });
+      if (!p) return;
+      const res = body.querySelector('#pf-import-result');
+      try {
+        const r = await dp.profileSeed(p);
+        res.textContent = `✓ 新增 P0 ${r.added.P0} / P1 ${r.added.P1} / P2 ${r.added.P2} / P3 ${r.added.P3} 字段（已有值未动）`;
+        toast('预填导入完成', 'ok');
+        doc = await dp.profileGet();
+        renderProfile(doc);
+      } catch (err) { res.textContent = '✗ ' + errText(err); toast(errText(err), 'error'); }
+    });
+    // 回滚
+    body.querySelectorAll('[data-a=revert]').forEach(btn => btn.addEventListener('click', async () => {
+      try {
+        await dp.profileRevert(btn.dataset.id);
+        toast('已回滚', 'ok');
+        doc = await dp.profileGet();
+        renderProfile(doc);
+      } catch (err) { toast(errText(err), 'error'); }
+    }));
+  }
+}
+
+// ---------- 搜索账本面板（/search ledger；角色无感知） ----------
+const STATUS_CN = { ok: '✓ 成功', blocked: '⛔ 拦截', denied: '🚫 拒绝', failed: '✗ 失败', cached: '♻ 缓存' };
+const TRACK_CN = { designated: '指定轨', autonomous: '自主轨' };
+let ledgerModalBody = null, ledgerRange = 'all';
+async function openSearchLedger() {
+  const { body } = openModal({ title: '🌐 联网搜索账本 · 角色无感知', width: '700px' });
+  ledgerModalBody = body;
+  await refreshLedger();
+}
+async function refreshLedger() {
+  const body = ledgerModalBody;
+  if (!body || !body.isConnected) { ledgerModalBody = null; return; }
+  let data;
+  try { data = await dp.searchLedger(ledgerRange); } catch (err) { body.innerHTML = `<p class="hint">加载失败：${esc(errText(err))}</p>`; return; }
+  const s = data.summary || {};
+  const fmtTok = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n || 0));
+  body.innerHTML = `
+    <p class="hint" style="margin:4px 0 10px">每一次检索（含被拦截/被拒/失败/缓存）都落账。自主轨条目可裁决：✓ 认可计入有效产出；✗ 划除后角色汇报时须表述为「已作废」。「轨道存疑」= 自报指定轨但当轮指令与查询词重合度低，建议抽查。花费为应用层估算 token（搜索源多不返回精确用量）。</p>
+    <div class="row" style="gap:8px;margin-bottom:10px">
+      ${[['today', '今日'], ['week', '本周'], ['month', '本月'], ['all', '全部']].map(([v, l]) =>
+        `<button class="btn btn-sm ${ledgerRange === v ? 'btn-primary' : ''}" data-range="${v}">${l}</button>`).join('')}
+    </div>
+    <div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:10px;font-size:12px">
+      <span class="badge p">指定轨 ${s.designated ? s.designated.count : 0} 条 · ${fmtTok(s.designated && s.designated.estTokens)} tok</span>
+      <span class="badge n">自主轨 ${s.autonomous ? s.autonomous.count : 0} 条 · ${fmtTok(s.autonomous && s.autonomous.estTokens)} tok · 划除 ${s.autonomous ? s.autonomous.rejected : 0}</span>
+      <span class="badge s">拦截 ${s.blocked || 0}</span><span class="badge t">拒绝 ${s.denied || 0}</span>
+      <span class="badge">失败 ${s.failed || 0}</span><span class="badge">缓存 ${s.cached || 0}</span>
+    </div>
+    <div style="max-height:360px;overflow:auto">
+      ${(data.entries || []).map(e => `
+        <div style="padding:8px 0;border-bottom:1px dashed var(--dp-border);font-size:12px" data-id="${esc(e.id)}">
+          <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">
+            <span class="badge ${e.track === 'autonomous' ? 'n' : 'p'}">${TRACK_CN[e.track] || e.track}</span>
+            <span class="badge">${STATUS_CN[e.status] || e.status}</span>
+            <b style="font-size:12px">${esc(e.query)}</b>
+            ${e.suspect ? '<span class="badge a">轨道存疑</span>' : ''}
+            <span class="grow"></span>
+            <span class="muted small">${esc(String(e.at || '').replace('T', ' ').slice(5, 16))}</span>
+          </div>
+          ${e.reason ? `<div class="hint">理由：${esc(e.reason)}</div>` : ''}
+          <div class="hint">${esc(e.source)} · ${e.results} 条结果 · ${e.estTokens || 0} tok 估算${e.status === 'cached' ? ' · 缓存命中（未重复请求）' : ''}${e.blockRule ? ' · 拦截规则：' + esc(e.blockRule) : ''}${e.verdict === 'rejected' ? ' · 已划除' : e.verdict === 'accepted' ? ' · 已认可' : ''}</div>
+          ${e.track === 'autonomous' && e.status === 'ok' && !e.verdict ? `
+            <div class="row" style="margin-top:4px;gap:6px">
+              <button class="btn btn-sm btn-primary" data-a="accept" data-id="${esc(e.id)}">✓ 认可</button>
+              <button class="btn btn-sm" data-a="reject" data-id="${esc(e.id)}">✗ 划除</button>
+            </div>` : ''}
+        </div>`).join('') || '<p class="hint" style="padding:12px 0">还没有任何检索记录。</p>'}
+    </div>`;
+  body.querySelectorAll('[data-range]').forEach(btn => btn.addEventListener('click', async () => {
+    ledgerRange = btn.dataset.range;
+    await refreshLedger();
+  }));
+  body.querySelectorAll('[data-a=accept],[data-a=reject]').forEach(btn => btn.addEventListener('click', async () => {
+    const verdict = btn.dataset.a === 'accept' ? 'accepted' : 'rejected';
+    try { await dp.searchVerdict(btn.dataset.id, verdict); toast(verdict === 'accepted' ? '已认可' : '已划除', 'ok'); await refreshLedger(); }
+    catch (err) { toast(errText(err), 'error'); }
+  }));
+}
+// 账本增量刷新（面板开着时每次落账推送一次）
+dp.on('search:ledger-changed', () => { if (ledgerModalBody) refreshLedger(); });
 
 // ---------- 导出 / 清空 ----------
 async function doExport() {

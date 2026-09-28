@@ -42,6 +42,12 @@ if (!gotLock) {
       if (recovered.interrupted) logger.info(`agent 台账恢复：${recovered.interrupted} 个 running 记录已标 interrupted`);
     } catch (e) { logger.error(e); }
 
+    // 搜索台账启动裁剪（开发版）：无长事务恢复语义，只裁超限旧条目（坏行读取时自然跳过）
+    try {
+      const t = require('./services/agent/search-ledger').trimOnBoot();
+      if (t.trimmed) logger.info(`搜索台账启动裁剪：保留最近 ${t.trimmed} 条`);
+    } catch (e) { logger.error(e); }
+
     // 日程调度器
     try {
       scheduler = require('./services/schedule/scheduler');

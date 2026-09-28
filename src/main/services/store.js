@@ -15,6 +15,7 @@ const FILE_MAP = {
   settings: 'config/settings.json',
   persona: 'config/persona.json',
   api: 'config/api.json',
+  search: 'config/search.json',
   commands: 'config/commands.json',
   categories: 'config/categories.json',
   sprites: 'config/sprites.json',
@@ -22,6 +23,7 @@ const FILE_MAP = {
   'chats/roleplay': 'chats/roleplay.json',
   'chats/quick': 'chats/quick.json',
   'memory/roleplay': 'memory/roleplay.json',
+  'user/profile': 'user/profile.json',
   'schedule/events': 'schedule/events.json',
 };
 
@@ -38,7 +40,7 @@ const DEFAULTS = {
     reader: { background: '', petScale: 1, petX: 50, petY: 40, splitPct: 58, dialog: { bg: '', family: '', size: 0, color: '' } },
     activity: { paused: false, idleThresholdSec: 180, windowPollMs: 1000, idlePollMs: 5000 },
     schedule: { leadEvent: 60, leadStart: 5, leadDeadline: 120, snoozeMin: 10, sound: true, systemNotification: true, catchupHours: 24 },
-    agent: { enabled: true, maxRounds: 8, permissionTimeoutSec: 120, permissionMode: 'read', toolMaxTokens: 8192 },
+    agent: { enabled: true, maxRounds: 8, permissionTimeoutSec: 120, permissionMode: 'read', toolMaxTokens: 8192, webSearch: { enabled: false, autonomousDailyLimit: 100, cooldownMin: 10, blockedTopics: [] } },
   },
   persona: {
     pet: {
@@ -63,6 +65,9 @@ const DEFAULTS = {
     params: { temperature: 0.8, maxTokens: 2048, topP: 0.9, frequencyPenalty: 0.3, presencePenalty: 0.3 },
     toolsStreamBroken: false, // ★H：网关不支持 stream+tools 时置 true，决策轮自动降级非流式
   },
+  // 联网搜索出口配置（titor_net_access_spec §5.3）：source ∈ ''(未配置)|exa|tavily|brave|searxng|stub；
+  // 密钥经 safeStorage 加密为 searchKeyEnc（stub 仅测试用，不出现在设置页清单）
+  search: { source: '', endpoint: '', searchKeyEnc: '' },
   commands: { commands: [] },
   categories: {
     categories: ['工作', '学习', '娱乐', '社交', '其他'],
@@ -84,6 +89,9 @@ const DEFAULTS = {
   'chats/roleplay': { messages: [], lastExtractAt: null, userCountSince: 0 },
   'chats/quick': { messages: [], lastExtractAt: null, userCountSince: 0 },
   'memory/roleplay': { items: [] },
+  // 用户身份档案（开发版新增）：P0 身份锚（锁定，仅面板可改）；P1/P2/P3 = 键值分层（漂移更新作用域）；
+  // log = 变更日志（含 drift/user 来源、原值快照、可回滚）。enabled=注入 prompt；drift=允许对话漂移
+  'user/profile': { enabled: true, drift: true, P0: '', P1: {}, P2: {}, P3: {}, log: [] },
   'schedule/events': { version: 1, events: [] },
 };
 
@@ -106,7 +114,7 @@ function filePathOf(name) {
 function init(dir) {
   dataDir = dir;
   guard.setUserDataDir(dir);
-  for (const sub of ['config', 'sprites', 'books', 'library', 'chats', 'memory', 'activity', 'schedule', 'logs', 'temp']) {
+  for (const sub of ['config', 'sprites', 'books', 'library', 'chats', 'memory', 'user', 'activity', 'schedule', 'logs', 'temp', 'websearch']) {
     fs.mkdirSync(path.join(dir, sub), { recursive: true });
   }
   // 预热全部配置（生成默认文件）

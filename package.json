@@ -1,7 +1,7 @@
 {
   "name": "deskpal",
-  "version": "0.3.7",
-  "description": "桌面宠物：角色扮演 / 书籍陪读 / 时间管理 / 日程提醒 / Agent 执行管线",
+  "version": "0.4.0",
+  "description": "桌面宠物：角色扮演 / 书籍陪读 / 时间管理 / 日程提醒 / Agent 执行管线 / 用户身份档案 / 受控联网检索",
   "author": "deskpal",
   "main": "src/main/main.js",
   "scripts": {
@@ -13,6 +13,7 @@
     "test:agent": "node scripts/test-agent.js && node scripts/test-agent-e2e.js && node scripts/test-context.js && node scripts/test-memory.js",
     "test:context": "node scripts/test-context.js",
     "test:memory": "node scripts/test-memory.js",
+    "test:websearch": "node scripts/test-websearch.js && node scripts/test-user-profile.js",
     "make-icon": "node scripts/make-icon.js",
     "make-icons": "electron scripts/gen-icons.js"
   },

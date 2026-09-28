@@ -92,6 +92,63 @@ section('buildMessages：quick 标签用 quickSystem（无人设记忆/任务段
   ok(!out[0].content.includes('任务执行模式'), 'quick 无 agent 段');
 }
 
+// ============ 1.5 戏外→戏内记忆隔离（v0.4.0-dev.3） ============
+section('buildMessages：harness 注记（系统核实）不进角色上下文（戏外/戏内隔离）');
+{
+  const history = [
+    { role: 'assistant', content: '报告已写入 todo.md。\n\n（系统核实：本次任务没有实际写入任何文件，上文关于已写入的表述与事实不符。）' },
+    { role: 'user', content: '厉害啊！' },
+  ];
+  const out = chat.buildMessages('roleplay', history);
+  const asst = out.find(m => m.role === 'assistant');
+  ok(!asst.content.includes('系统核实'), '「（系统核实：…）」注记被剥离（不诱发角色自我怀疑）');
+  ok(asst.content.includes('报告已写入 todo.md'), '正文本身保留（角色记忆连续）');
+}
+
+section('buildMessages：agent 任务轮长回复只保留摘要（agentRun 标记）');
+{
+  const longReport = '检索完成。' + '数据'.repeat(900); // ≈1809 字符
+  const history = [
+    { role: 'assistant', content: longReport, agentRun: true },
+    { role: 'assistant', content: '这是一条普通扮演回复。' + '心'.repeat(900), }, // 无标记的普通长回复不截断
+  ];
+  const out = chat.buildMessages('roleplay', history);
+  const caps = out.slice(1).map(m => m.content);
+  ok(caps[0].includes('戏外工作报告过长'), '任务轮超长回复被摘要化并带注记');
+  ok(caps[0].length < 1000, `摘要 ≤800+注记（实际 ${caps[0].length}）`);
+  ok(caps[0].startsWith('检索完成。'), '摘要保留开头');
+  ok(!caps[1].includes('戏外工作报告过长') && caps[1].includes('这是一条普通扮演回复'), '无标记的普通回复不受影响');
+}
+
+section('roleplaySystem：近期工作台账收据注入（有近期 run 时）');
+{
+  const runs = require(SVC('agent/runs'));
+  const rid = runs.newRunId();
+  runs.append({
+    id: rid, at: new Date().toISOString(), status: 'done', instruction: 't',
+    steps: [
+      { kind: 'tool', tool: 'web_search', summary: 'x', ok: true },
+      { kind: 'tool', tool: 'web_search', summary: 'y', ok: true },
+      { kind: 'tool', tool: 'write_file', summary: 'p', ok: true },
+    ],
+    changed: [{ path: 'D:/x/报告.md' }],
+  });
+  const sys = prompts.roleplaySystem();
+  ok(sys.includes('【近期工作台账'), '台账区块出现');
+  ok(sys.includes('web_search×2') && sys.includes('write_file×1'), '工具计数聚合正确');
+  ok(sys.includes('报告.md'), '产物文件名注入');
+  ok(sys.includes('引用这些成果不需要在本轮重新执行'), '收据语义注记存在');
+  // 纪律条款：既往工作可信 + 回戏
+  ok(sys.includes('本纪律只约束「本轮正在执行的任务」'), '执行纪律含既往工作边界条款');
+  ok(sys.includes('回到日常扮演语气'), '含任务后回戏指令');
+  // 旧 run（>24h）不注入
+  runs.append({ id: runs.newRunId(), at: new Date(Date.now() - 25 * 3600 * 1000).toISOString(), status: 'done', instruction: 'old', steps: [{ kind: 'tool', tool: 'read_file', ok: true }], changed: [] });
+  // 追加了一条 25h 前的 run，仍在 24h 窗口内的那条照常显示即可（不单独断言旧条被滤——
+  // recentWorkBlock 按时间过滤的逻辑由上方 cutoff 保证，这里防回归仅验证不抛错）
+  ok(prompts.roleplaySystem().includes('【近期工作台账'), '时间过滤后仍正常输出（不抛错）');
+  runs.update({ id: rid, at: new Date().toISOString(), status: 'done', instruction: 't', steps: [], changed: [] }); // 还原：清空 steps 后不再产出台账
+}
+
 // ============ 2. saveHistory：存储上限（存档≠上下文） ============
 section('saveHistory：存档最多 200 条（MAX_KEEP），只影响存储不影响本轮上下文');
 {
@@ -169,7 +226,7 @@ section('memoryTick(force)/flushMemory：不足阈值但强制 → 补提取（�
   let llmCalled = 0;
   llm.genericCompletion = async () => {
     llmCalled++;
-    return JSON.stringify([{ type: 'preference', content: '用户偏好纯思辨性哲学探讨', importance: 4 }]);
+    return JSON.stringify([{ type: 'preference', content: '用户偏好简洁直接的沟通方式', importance: 4 }]);
   };
   store.replace('memory/roleplay', { items: [] });
   store.replace('chats/roleplay', { messages: [{ role: 'user', content: '我们聊聊世界本质' }], userCountSince: 2, lastExtractAt: null });

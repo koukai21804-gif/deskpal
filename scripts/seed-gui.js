@@ -37,6 +37,23 @@ app.whenReady().then(() => {
     const llm = require('../src/main/services/llm');
     llm.saveKey(key); // 用当前 profile 的 safeStorage 加密落盘（自洽）
     store.set('api', { endpoint: realApi.endpoint, model: realApi.model, params: realApi.params || {} });
+
+    // ---- 开发版联网场景种子（spec §13.3）：stub 源 + 开启态 ----
+    // GUI 验收路径：聊天窗说「帮我搜一下 XX」→ 首次弹授权卡（允许）→ stub 结果回填带 [stub] 标注 →
+    // 聊天窗输入 /search ledger 看账本 → /user profile 看档案与漂移日志。
+    // 真实供应商验收：设置→API→联网搜索 选 Exa/Tavily/Brave 填 Key 测试连接后，把 source 换成对应值。
+    if (process.env.SEED_WEBSEARCH) {
+      store.set('search', { source: 'stub' });
+      store.set('settings', { agent: { webSearch: { enabled: true, autonomousDailyLimit: 100, cooldownMin: 10, blockedTopics: [] } } });
+      const userProfile = require('../src/main/services/user-profile');
+      userProfile.saveDoc({
+        P0: '示例用户：年龄段/地区/职业底色（验收用种子数据，可删）',
+        P1: { 相处偏好: '先给结论再讲原理（验收用种子数据，可删）' },
+        P2: { 当前项目: 'deskpal 验收' },
+        P3: {},
+      });
+      console.log('联网场景种子：search.source=stub + webSearch.enabled=true + 档案种子已写入');
+    }
     store.flushAll();
     console.log('种子完成：' + seedDir);
     app.exit(0);

@@ -283,19 +283,24 @@ const tools = require(path.join(ROOT, 'src/main/services/agent/builtin'));
 
 {
   const list = tools.list();
-  eq(list.map(t => t.name).sort(), ['list_dir', 'read_file', 'save_memory', 'write_file'], '四件套注册');
+  eq(list.map(t => t.name).sort(), ['list_dir', 'read_file', 'save_memory', 'web_search', 'write_file'], '五件套注册（含 web_search）');
   const wf = list.find(t => t.name === 'write_file');
   ok(wf.enabled, 'write_file 已转正启用');
   ok(wf.params.reason, 'write_file 含 reason 参数');
   const sm = list.find(t => t.name === 'save_memory');
   ok(sm && sm.enabled && !sm.params.path, 'save_memory 已注册（无 path 参数，不受文件权限管辖）');
+  const wst = list.find(t => t.name === 'web_search');
+  ok(wst && wst.enabled && wst.permission === 'read', 'web_search 已注册（read 权限，闸在 handler）');
+  eq(tools.RESULT_CAPS.web_search, 12000, 'web_search 回填上限 12000');
   const schemas = tools.openAiSchemas();
-  eq(schemas.length, 4, 'OpenAI schema 数量');
+  eq(schemas.length, 5, 'OpenAI schema 数量');
   const wfSchema = schemas.find(s => s.function.name === 'write_file');
   ok(wfSchema.function.parameters.properties.reason, 'schema 含 reason');
   ok(wfSchema.function.parameters.required.includes('reason'), 'reason 为必填');
   const smSchema = schemas.find(s => s.function.name === 'save_memory');
   ok(smSchema && smSchema.function.parameters.required.includes('content') && !smSchema.function.parameters.required.includes('importance'), 'save_memory content 必填、importance 可选');
+  const wsSchema = schemas.find(s => s.function.name === 'web_search');
+  ok(wsSchema && wsSchema.function.parameters.required.includes('reason') && wsSchema.function.parameters.required.includes('query') === false, 'web_search reason 必填（query 由 handler 校验）');
 }
 
 // ============ 6. 熔断/权限纯逻辑（间接：denyStreak 语义在 loop，这里验证 permissions fail-closed） ============

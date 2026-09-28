@@ -266,6 +266,7 @@ async function renderTheme() {
 async function renderApi() {
   const api = await dp.storeGet('api');
   const settings = await dp.storeGet('settings');
+  const searchCfg = await dp.storeGet('search'); // 联网搜索源配置（hasKey 布尔，密文不出主进程）
   const agent = settings.agent || { enabled: true, maxRounds: 8, permissionTimeoutSec: 120, permissionMode: 'read', toolMaxTokens: 8192 };
   const PRESETS = [
     { name: '自定义', endpoint: '', model: '' },
@@ -277,6 +278,8 @@ async function renderApi() {
   ];
   const cur = PRESETS.find(p => p.endpoint === api.endpoint) || PRESETS[0];
   const P = api.params || {};
+  const ws = settings.agent && settings.agent.webSearch || { enabled: false, autonomousDailyLimit: 100, cooldownMin: 10, blockedTopics: [] };
+  const wsTopics = (ws.blockedTopics || []).join('\n');
 
   body.innerHTML = `<div class="set-section">
     <h3 style="margin-top:0">LLM 接口（OpenAI 兼容协议）</h3>
@@ -328,6 +331,37 @@ async function renderApi() {
     <div class="field"><span class="label">工具轮输出上限（2048–65536 tokens。写文件时工具参数内嵌全文，需比聊天「最大 tokens」大；接口报 max_tokens 超限时调小此项）</span>
       <div class="slider-row"><input type="range" id="ag-tooltokens" min="2048" max="65536" step="1024" value="${agent.toolMaxTokens ?? 8192}"><span class="val">${agent.toolMaxTokens ?? 8192}</span></div></div>
     <div class="row"><span class="hint" id="ag-saved"></span></div>
+  </div>
+  <div class="set-section">
+    <h3 style="margin-top:0">🌐 联网搜索（受控出口 + 账本）</h3>
+    <p class="hint">角色可联网检索公开信息：用户明确要求的直接执行（首次使用会在聊天中弹授权卡开启）；角色自主补充的检索逐次弹卡批准。每次检索（含被拦截/被拒）都记入账本，聊天窗输入 <b>/search ledger</b> 查看。查询词不得包含个人信息（出口硬拦）。</p>
+    <div class="field"><span class="label">联网搜索总开关${ws.enabled ? '（已开启 ● 通常由聊天内授权卡开启，此处可一键关闭）' : '（未开启 —— 聊天中要求查资料时会弹授权卡）'}</span>
+      <label style="display:flex;gap:6px;align-items:center;font-size:13px">
+        <input type="checkbox" id="ws-enabled" ${ws.enabled ? 'checked' : ''}>
+        允许角色执行联网检索
+      </label></div>
+    <div class="field"><span class="label">搜索源供应商（与 LLM API 同款：选源 → 填 Key → 测试连接）</span>
+      <select id="ws-source" style="max-width:360px">
+        <option value="">（未配置）</option>
+        ${(await dp.searchProviders()).map(p => `<option value="${p.id}" ${searchCfg.source === p.id ? 'selected' : ''}>${esc(p.label)}${p.needsKey ? '（需 API Key）' : ''}</option>`).join('')}
+      </select>
+      <div class="hint" id="ws-keyhint"></div></div>
+    <div class="field" id="ws-endpoint-field" style="${searchCfg.source === 'searxng' ? '' : 'display:none'}"><span class="label">SearXNG 实例地址（自托管，须开启 JSON format）</span>
+      <input type="text" id="ws-endpoint" value="${esc(searchCfg.endpoint)}" placeholder="https://searxng.example.com" style="max-width:360px"></div>
+    <div class="field"><span class="label">API Key（${searchCfg.hasKey ? '已配置 ●' : '未配置'}，经系统安全存储加密）</span>
+      <input type="password" id="ws-key" placeholder="${searchCfg.hasKey ? '留空则不修改' : '在供应商官网申请'}" autocomplete="new-password" style="max-width:360px"></div>
+    <div class="row">
+      <button class="btn btn-primary" id="ws-save">保存配置</button>
+      <button class="btn" id="ws-test">测试连接</button>
+      <span class="hint" id="ws-test-result"></span>
+    </div>
+    <div class="field" style="margin-top:12px"><span class="label">自主检索日限（0–500 次/自然日；达限后仅可执行用户明确要求的检索，并提示一次）</span>
+      <div class="slider-row"><input type="range" id="ws-daily" min="0" max="500" step="10" value="${ws.autonomousDailyLimit ?? 100}"><span class="val">${ws.autonomousDailyLimit ?? 100}</span></div></div>
+    <div class="field"><span class="label">同查询冷却（0–60 分钟；冷却内重复查询直接复用上次结果，不重复计费）</span>
+      <div class="slider-row"><input type="range" id="ws-cooldown" min="0" max="60" step="5" value="${ws.cooldownMin ?? 10}"><span class="val">${ws.cooldownMin ?? 10} 分钟</span></div></div>
+    <div class="field"><span class="label">回避话题表（每行一条；命中即拦截，支持关键词或 /正则/i 写法。用于明确不想让角色碰的话题）</span>
+      <textarea id="ws-topics" rows="3" style="max-width:480px" placeholder="每行一条，如：&#10;某敏感词&#10;/某正则/i">${esc(wsTopics)}</textarea></div>
+    <p class="hint">密钥经 safeStorage 加密存储，不会进入角色上下文。检索结果不落盘（仅内存冷却缓存）；用户明确要求保存时才经 write_file 权限流写入。</p>
   </div>`;
 
   // ---- 模型列表自动获取（类似 CC Switch：填好地址 + Key → 拉取 /models → 下拉选择） ----
@@ -433,6 +467,56 @@ async function renderApi() {
     r.addEventListener('input', () => r.closest('.slider-row').querySelector('.val').textContent = r.value + (r === agTimeout ? 's' : ''));
     r.addEventListener('change', saveAgent);
   }
+
+  // ---- 联网搜索区块 ----
+  const wsSource = body.querySelector('#ws-source');
+  const wsEndpointField = body.querySelector('#ws-endpoint-field');
+  const wsKeyHint = body.querySelector('#ws-keyhint');
+  const providers = await dp.searchProviders();
+  const updProviderHint = () => {
+    const p = providers.find(x => x.id === wsSource.value);
+    wsKeyHint.textContent = p ? (p.keyHint || '') : '';
+    wsEndpointField.style.display = wsSource.value === 'searxng' ? '' : 'none';
+  };
+  updProviderHint();
+  wsSource.addEventListener('change', updProviderHint);
+  const wsFlash = (t, okk) => {
+    const el = body.querySelector('#ws-test-result');
+    if (el) { el.textContent = t; el.style.color = okk === true ? 'var(--dp-ok)' : okk === false ? 'var(--dp-danger)' : ''; }
+  };
+  const collectWebSearch = () => ({
+    enabled: body.querySelector('#ws-enabled').checked,
+    autonomousDailyLimit: +body.querySelector('#ws-daily').value,
+    cooldownMin: +body.querySelector('#ws-cooldown').value,
+    blockedTopics: body.querySelector('#ws-topics').value.split('\n').map(s => s.trim()).filter(Boolean),
+  });
+  body.querySelector('#ws-save').addEventListener('click', async () => {
+    try {
+      await dp.storeSet('search', { source: wsSource.value, endpoint: body.querySelector('#ws-endpoint').value.trim() });
+      const key = body.querySelector('#ws-key').value.trim();
+      if (key) await dp.searchSaveKey(key);
+      await dp.storeSet('settings', { agent: { webSearch: collectWebSearch() } });
+      toast('联网搜索配置已保存', 'ok');
+      renderApi();
+    } catch (err) { toast(errText(err), 'error'); }
+  });
+  body.querySelector('#ws-test').addEventListener('click', async () => {
+    wsFlash('测试中…');
+    // 先保存当前表单再测试（未保存的 Key 直接可用）
+    const src = wsSource.value;
+    if (!src) return wsFlash('✗ 请先选择供应商', false);
+    const key = body.querySelector('#ws-key').value.trim();
+    const endpoint = body.querySelector('#ws-endpoint').value.trim();
+    let keyForTest = key;
+    if (!keyForTest && searchCfg.hasKey && src === searchCfg.source) keyForTest = undefined; // 用已保存的
+    try {
+      const r = await dp.searchTest({ source: src, endpoint, ...(keyForTest !== undefined ? { key: keyForTest } : {}) });
+      wsFlash(r.ok ? `✓ 连接成功，延迟 ${r.latencyMs}ms，返回 ${r.results} 条` : `✗ ${r.error}`, r.ok);
+    } catch (err) { wsFlash('✗ ' + errText(err), false); }
+  });
+  const wsDaily = body.querySelector('#ws-daily'), wsCooldown = body.querySelector('#ws-cooldown');
+  wsDaily.addEventListener('input', () => wsDaily.closest('.slider-row').querySelector('.val').textContent = wsDaily.value);
+  wsCooldown.addEventListener('input', () => wsCooldown.closest('.slider-row').querySelector('.val').textContent = wsCooldown.value + ' 分钟');
 }
 
 // ================= ⑤ 指令 =================

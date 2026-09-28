@@ -10,7 +10,10 @@ const emotion = require('./emotion');
 const logger = require('../logger');
 const windows = require('../windows');
 const { makeStreamPipeline } = require('./stream-pipeline');
+const { tokenEstimate } = require('./token-est');
 const loop = require('./agent/loop');
+const userProfile = require('./user-profile');
+const searchLedger = require('./agent/search-ledger');
 
 const HISTORY_KEY = { roleplay: 'chats/roleplay', quick: 'chats/quick' };
 const MAX_KEEP = 200, CTX_MSGS = 20, CTX_TOKENS = 6400;
@@ -28,16 +31,26 @@ function saveHistory(tab, messages) {
   store.replace(HISTORY_KEY[tab], { ...store.get(HISTORY_KEY[tab]), messages: messages.slice(-MAX_KEEP) });
 }
 
-function tokenEstimate(text) {
-  const cjk = (text.match(/[\u4e00-\u9fff\u3040-\u30ff]/g) || []).length;
-  return cjk * 0.5 + Math.max(0, text.length - cjk) * 0.25;
+// 戏外→戏内记忆隔离（v0.4.0-dev.3）：
+//   a) （系统核实：…）是 harness 给用户的审计注记（戏外），永不进入角色上下文（戏内）——
+//      它们以断言口吻描述既往轮次「与事实不符」，残留会在后续轮次诱发角色自我怀疑（实测 dev.2 事故）；
+//   b) agent 任务轮的完整工作报告在戏内记忆里只保留摘要，全文留在聊天 UI 与 runs.jsonl（戏外），
+//      防止任务长文霸占上下文、把扮演语气拖回任务腔。
+const HARNESS_NOTE_RE = /（系统核实：[^）]*）/g;
+const AGENT_REPLY_CAP = 800;
+function forContext(m) {
+  let c = emotion.parseAndStrip(m.content).clean.replace(HARNESS_NOTE_RE, '').trim();
+  if (m.agentRun && c.length > AGENT_REPLY_CAP) {
+    c = c.slice(0, AGENT_REPLY_CAP) + '\n…（戏外工作报告过长，此处仅保留摘要；完整内容见聊天记录与工作文档）';
+  }
+  return c;
 }
 
 // 组装请求上下文：system + 最近 CTX_MSGS 条（token 超限再砍半）
 function buildMessages(tab, history) {
   const system = tab === 'quick' ? prompts.quickSystem() : prompts.roleplaySystem();
   let recent = history.slice(-CTX_MSGS).map(m => ({
-    role: m.role, content: emotion.parseAndStrip(m.content).clean,
+    role: m.role, content: forContext(m),
   }));
   let total = tokenEstimate(system);
   for (const m of recent) total += tokenEstimate(m.content);
@@ -55,8 +68,9 @@ function sendToWin(payload) {
 }
 
 // 最终回复落史（两条路径共用）；msgId 由主进程生成并随 llm:done 带回，
-// 渲染层用它保持本地消息附加数据（时间线/diff 卡）在历史刷新后不丢
-async function finalizeReply(tab, fl) {
+// 渲染层用它保持本地消息附加数据（时间线/diff 卡）在历史刷新后不丢。
+// meta.agentRun：agent 任务轮的回复打标（戏内记忆据此做摘要化隔离，见 forContext）
+async function finalizeReply(tab, fl, meta = {}) {
   const h = getHistory(tab);
   const msgId = 'm' + Date.now().toString(36);
   h.push({
@@ -64,6 +78,7 @@ async function finalizeReply(tab, fl) {
     emotion: fl.emotion || undefined,
     beats: fl.beats && fl.beats.length ? fl.beats : undefined,
     schedule: fl.schedule || undefined,
+    agentRun: meta.agentRun || undefined,
     at: dayjs().format(),
   });
   saveHistory(tab, h);
@@ -108,7 +123,10 @@ function plainTurn(tab, reqId, messages) {
       const fl = pipeline.flush();
       const { msgId } = await finalizeReply(tab, fl);
       sendToWin({ event: 'llm:done', data: { tab, reqId, clean: fl.clean, emotion: fl.emotion, beats: fl.beats, schedule: fl.schedule, aborted: false, msgId } });
-      if (tab === 'roleplay') memoryTick().catch(e => logger.warn('记忆提取失败: ' + e.message));
+      if (tab === 'roleplay') {
+        memoryTick().catch(e => logger.warn('记忆提取失败: ' + e.message));
+        userProfile.tick().catch(e => logger.warn('身份档案漂移失败: ' + e.message)); // 开发版：档案漂移与记忆提取同节奏
+      }
     } catch (e) {
       if (e.name === 'AbortError') {
         // 停止：保留半截（onChunk 已推送的部分在渲染层保留）
@@ -125,7 +143,7 @@ function plainTurn(tab, reqId, messages) {
 function runAgentTurn(tab, reqId, instruction, baseMessages) {
   loop.startRun({
     reqId, instruction, baseMessages,
-    onFinal: (fl) => finalizeReply(tab, fl),
+    onFinal: (fl) => finalizeReply(tab, fl, { agentRun: true }),
     onDone: (p) => {
       sendToWin({
         event: 'llm:done',
@@ -135,6 +153,7 @@ function runAgentTurn(tab, reqId, instruction, baseMessages) {
         },
       });
       memoryTick().catch(e => logger.warn('记忆提取失败: ' + e.message));
+      userProfile.tick().catch(e => logger.warn('身份档案漂移失败: ' + e.message)); // 开发版：档案漂移与记忆提取同节奏
     },
     onAborted: ({ runId }) => {
       sendToWin({ event: 'llm:done', data: { tab, reqId, clean: '', emotion: null, schedule: null, aborted: true, runId } });
@@ -220,7 +239,10 @@ const lullTimer = setInterval(() => {
     const lastUser = [...(data.messages || [])].reverse().find(m => m.role === 'user');
     if (!lastUser || !lastUser.at) return;
     const idleMin = (Date.now() - new Date(lastUser.at).getTime()) / 60000;
-    if (idleMin >= IDLE_GAP_MIN) memoryTick(true).catch(() => {});
+    if (idleMin >= IDLE_GAP_MIN) {
+      memoryTick(true).catch(() => {});
+      userProfile.tick(true).catch(() => {}); // 开发版：冷却补漂移（tick 自带 ≥2 条门槛，不空跑）
+    }
   } catch (_) {}
 }, 10 * 60 * 1000);
 if (lullTimer.unref) lullTimer.unref();
@@ -235,6 +257,7 @@ function bumpUserCount(tab) {
   if (tab !== 'roleplay') return;
   const data = store.get('chats/roleplay');
   store.replace('chats/roleplay', { ...data, userCountSince: (data.userCountSince || 0) + 1 });
+  userProfile.bump(); // 开发版：身份档案漂移计数（只认 roleplay）
 }
 
 async function exportChat(tab) {
