@@ -1,4 +1,4 @@
-# 缇托·诺蕾姬 形象授权条款 / Titor Noreiji Character Artwork License
+# 缇托·诺蕾姬 形象授权条款 / Titor Knowledge Character Artwork License
 
 ## 中文
 
