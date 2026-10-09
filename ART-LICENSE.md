@@ -2,7 +2,7 @@
 
 ## 中文
 
-「缇托·诺蕾姬」（Titor Noreiji）的全部形象素材——包括但不限于 `characters/titor/` 与 `resources/pet/titor/` 下的表情差分图与背景图、默认人设档案 `characters/titor/缇托.pet.json`，以及仓库与安装包中的应用图标——的著作权归本项目作者所有，并已办理美术作品著作权登记。**这些素材不属于 [MIT 许可证](./LICENSE) 的授权范围**，MIT 仅适用于本项目源代码。
+「缇托·诺蕾姬」（Titor Knowledge）的全部形象素材——包括但不限于 `characters/titor/` 与 `resources/pet/titor/` 下的表情差分图与背景图、默认人设档案 `characters/titor/缇托.pet.json`，以及仓库与安装包中的应用图标——的著作权归本项目作者所有，并已办理美术作品著作权登记。**这些素材不属于 [MIT 许可证](./LICENSE) 的授权范围**，MIT 仅适用于本项目源代码。
 
 随本项目分发期间，你可以在**个人、非商业**用途下使用、运行包含这些素材的本程序及其 fork；分发 fork 时必须完整保留本条款与 [LICENSE](./LICENSE)。
 
