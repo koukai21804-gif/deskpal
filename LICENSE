@@ -19,3 +19,21 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+----------------------------------------------------------------------------
+
+ADDITIONAL NOTICE — CHARACTER ARTWORK EXCLUSION / 角色形象版权特别声明
+
+The MIT license above applies to the SOURCE CODE of this project only.
+It does NOT cover the built-in character artwork "缇托·诺蕾姬 (Titor
+Noreiji)" — including the expression sprites, background, default
+character profile and app icons under characters/ and resources/ —
+which is Copyright (c) 2026 the deskpal author (registered artwork of
+visual art). That artwork is distributed with this project for
+personal, non-commercial use only. See ART-LICENSE.md for the full terms.
+
+上述 MIT 许可证仅适用于本项目源代码，不覆盖内置角色「缇托·诺蕾姬」
+的形象素材（characters/ 与 resources/ 下的表情差分图、背景图、默认
+人设档案及应用图标）。该等素材著作权归本项目作者所有（已办理美术
+作品著作权登记），仅随本项目供个人非商业使用，完整条款见
+ART-LICENSE.md。

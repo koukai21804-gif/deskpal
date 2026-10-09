@@ -31,6 +31,12 @@ const prompts = require(SVC('prompts'));
 const llm = require(SVC('llm'));
 const dayjs = require('dayjs');
 
+// v0.5 多会话：roleplay 计数随会话走（顶层 userCountSince 已废弃）
+const activeSess = () => {
+  const d = store.get('chats/roleplay');
+  return (d.sessions || []).find(s => s.id === d.activeSessionId) || (d.sessions || [])[0] || {};
+};
+
 // ============ 1. buildMessages：窗口与结构 ============
 section('buildMessages：system 在首位');
 {
@@ -55,6 +61,14 @@ section('buildMessages：仅注入最近 20 条（CTX_MSGS），更早历史不�
   eq(msgs[0].content, 'msg16', '窗口起点=第 16 条（msg01–msg15 被丢弃）');
   eq(msgs[msgs.length - 1].content, 'msg35', '窗口终点=最后一条');
   ok(!out[0].content.includes('msg01'), '最早的消息不出现在任何位置');
+  // 戏外工作轮（/order）：历史窗收窄到 10 条（20261004——工作任务的 base 每轮全量重发，
+  // 20 条扮演历史是乘法税的大头）
+  const outW = chat.buildMessages('roleplay', history, { work: true });
+  eq(outW.slice(1).length, 10, 'work 轮只取最近 10 条');
+  eq(outW.slice(1)[0].content, 'msg26', 'work 窗口起点=第 26 条');
+  eq(outW.slice(1)[9].content, 'msg35', 'work 窗口终点=最后一条');
+  const outQ = chat.buildMessages('quick', history, { work: true });
+  eq(outQ.slice(1).length, 20, 'quick 不受 work 窗口影响（恒 20）');
 }
 
 section('buildMessages：token 超限砍半（保窗内最新消息）');
@@ -105,19 +119,44 @@ section('buildMessages：harness 注记（系统核实）不进角色上下文�
   ok(asst.content.includes('报告已写入 todo.md'), '正文本身保留（角色记忆连续）');
 }
 
-section('buildMessages：agent 任务轮长回复只保留摘要（agentRun 标记）');
+section('buildMessages：agent 任务轮长报告结构化压缩（M-2：保头尾+不确定节，最新 2000 / 更早 500）');
 {
-  const longReport = '检索完成。' + '数据'.repeat(900); // ≈1809 字符
+  const longReport = '## 结论先行\n检索完成，结论 A 成立。\n' + '论证细节。'.repeat(400)
+    + '\n## 我不确定的部分\n样本量不足，结论 A 的置信度中等，建议复查。\n' + '附录内容。'.repeat(400);
   const history = [
-    { role: 'assistant', content: longReport, agentRun: true },
+    { role: 'assistant', content: longReport, agentRun: true },        // 更早的报告 → 500 上限
+    { role: 'assistant', content: longReport, agentRun: true },        // 窗口内最新报告 → 2000 上限
     { role: 'assistant', content: '这是一条普通扮演回复。' + '心'.repeat(900), }, // 无标记的普通长回复不截断
   ];
   const out = chat.buildMessages('roleplay', history);
   const caps = out.slice(1).map(m => m.content);
-  ok(caps[0].includes('戏外工作报告过长'), '任务轮超长回复被摘要化并带注记');
-  ok(caps[0].length < 1000, `摘要 ≤800+注记（实际 ${caps[0].length}）`);
-  ok(caps[0].startsWith('检索完成。'), '摘要保留开头');
-  ok(!caps[1].includes('戏外工作报告过长') && caps[1].includes('这是一条普通扮演回复'), '无标记的普通回复不受影响');
+  ok(caps[0].startsWith('[戏外工作报告]'), '更早的报告带戏外来源前缀（provenance）');
+  ok(caps[0].length <= 700, `更早的报告 ≤500+注记（实际 ${caps[0].length}）`);
+  ok(caps[1].startsWith('[戏外工作报告]'), '最新报告带前缀');
+  ok(caps[1].length <= 2200, `最新报告 ≤2000+注记（实际 ${caps[1].length}）`);
+  ok(caps[1].includes('结论先行'), '最新报告保头部（结论区）');
+  ok(caps[1].includes('我不确定的部分'), '最新报告白名单节存活（置信度不再被截掉）');
+  ok(caps[1].includes('置信度中等'), '不确定节的具体内容保留');
+  ok(caps[1].includes('报告已结构化压缩'), '压缩回执存在');
+  const appendixHits = (caps[1].match(/附录内容。/g) || []).length;
+  ok(appendixHits < 200, `附录正文主体被丢弃（残留 ${appendixHits} 处，均为头尾区间内的合法保留）`);
+  ok(!caps[2].includes('戏外工作报告') && caps[2].includes('这是一条普通扮演回复'), '无标记的普通回复不受影响');
+}
+
+section('buildMessages：v1.1 §1.6 反例——结论+不确定+带标题附录的报告，附录整节丢弃');
+{
+  const report = '## 结论\n' + 'A'.repeat(1000) + '\n## 我不确定的部分\n' + 'B'.repeat(800) + '\n## 附录\n' + 'C'.repeat(3000);
+  const history = [
+    { role: 'user', content: '任务收尾' },
+    { role: 'assistant', content: report, agentRun: true },
+  ];
+  const out = chat.buildMessages('roleplay', history);
+  const rep = out[out.length - 1].content;
+  ok(rep.length <= 2200, `总长 ≤2000+注记（实际 ${rep.length}）`);
+  ok(rep.includes('## 结论'), '结论头保留');
+  ok(rep.includes('## 我不确定的部分') && rep.includes('B'.repeat(100)), '不确定节整节存活');
+  const cHits = (rep.match(/C/g) || []).length;
+  ok(cHits <= 450, `附录主体被丢弃（残留 ${cHits} 个 C，均为尾部 400 区间的合法保留）`);
 }
 
 section('roleplaySystem：近期工作台账收据注入（有近期 run 时）');
@@ -131,12 +170,16 @@ section('roleplaySystem：近期工作台账收据注入（有近期 run 时）'
       { kind: 'tool', tool: 'web_search', summary: 'y', ok: true },
       { kind: 'tool', tool: 'write_file', summary: 'p', ok: true },
     ],
-    changed: [{ path: 'D:/x/报告.md' }],
+    changed: [
+      { path: 'D:/x/报告.md', origin: 'tool' },                    // 工具真实写入 → 产物
+      { path: 'D:/x/config/settings.json', origin: 'ambiguous' },  // 应用自写漂移 → 不是产物（M-3）
+    ],
   });
   const sys = prompts.roleplaySystem();
   ok(sys.includes('【近期工作台账'), '台账区块出现');
   ok(sys.includes('web_search×2') && sys.includes('write_file×1'), '工具计数聚合正确');
-  ok(sys.includes('报告.md'), '产物文件名注入');
+  ok(sys.includes('报告.md'), '工具产物文件名注入');
+  ok(!sys.includes('settings.json'), '应用自写文件漂移不算产物（ambiguous 不进台账）');
   ok(sys.includes('引用这些成果不需要在本轮重新执行'), '收据语义注记存在');
   // 纪律条款：既往工作可信 + 回戏
   ok(sys.includes('本纪律只约束「本轮正在执行的任务」'), '执行纪律含既往工作边界条款');
@@ -167,19 +210,31 @@ section('roleplaySystem：人设与禁忌每轮全量注入（防 OOC 基座）'
   ok(sys.includes('角色设定') && sys.includes('禁忌'), '人设区块存在');
   ok(sys.includes('不要跳出角色'), '保持角色硬规则存在');
   ok(!sys.includes('【长期记忆'), '无记忆时无长期记忆区块');
+  // 缓存前缀稳定性（20261004）：【当前时间】是分钟级变化字段，必须位于 system 末尾——
+  // 卡在中段会让它之后的数千 token（记忆/规则/agent 纪律）每翻分钟打出血 DeepSeek 前缀缓存
+  const tIdx = sys.indexOf('【当前时间】');
+  ok(tIdx >= 0, '时间块存在');
+  ok(tIdx > sys.indexOf('【交互规则】'), '时间块在交互规则之后（缓存前缀稳定）');
 }
 
-section('roleplaySystem：长期记忆 top10 按重要性注入（伪史），超出者不注入');
+section('roleplaySystem：长期记忆注入（v0.5：core 全量 + working 最近 8；ephemeral 不注入）');
 {
   const items = [];
-  for (let i = 1; i <= 12; i++) items.push({ type: 'fact', content: `记忆条目${i}号`, importance: i, createdAt: dayjs().format() });
-  store.replace('memory/roleplay', { items });
+  // 12 条同 importance 的 working 记忆——M-1 反例：旧实现按 importance 排序全部同分，
+  // 稳定排序保持插入序、slice(0,10) 恒取最旧；新注入按时间取最新 8
+  for (let i = 1; i <= 12; i++) items.push({ id: 'mem_w' + i, type: 'fact', content: `工作记忆${String(i).padStart(2, '0')}`, importance: 5, scope: 'working', createdAt: `2026-10-${String(i).padStart(2, '0')}T10:00:00` });
+  items.push({ id: 'mem_c1', type: 'fact', content: '核心认知甲', importance: 5, scope: 'core', createdAt: '2026-09-01T10:00:00' });
+  items.push({ id: 'mem_c2', type: 'fact', content: '核心认知乙', importance: 5, scope: 'core', createdAt: '2026-09-02T10:00:00' });
+  items.push({ id: 'mem_e1', type: 'event', content: '限时事件记录', importance: 5, scope: 'ephemeral', ttlDays: 14, createdAt: dayjs().format() });
+  store.replace('memory/roleplay', { items, archive: [] });
   const sys = prompts.roleplaySystem();
-  ok(sys.includes('【长期记忆（之前对话中的重要信息）】'), '长期记忆区块出现');
-  for (let i = 12; i >= 3; i--) ok(sys.includes(`记忆条目${i}号`), `importance=${i}（top10）注入`);
-  ok(!sys.includes('记忆条目2号'), 'importance=2（第 11 名）不注入');
-  ok(!sys.includes('记忆条目1号'), 'importance=1（第 12 名）不注入');
-  store.replace('memory/roleplay', { items: [] }); // 还原
+  ok(sys.includes('【长期记忆 · core'), 'core 区块出现');
+  ok(sys.includes('【近期记忆 · working'), 'working 区块出现');
+  for (let i = 5; i <= 12; i++) ok(sys.includes(`工作记忆${String(i).padStart(2, '0')}`), `working 最新第 ${i} 条注入`);
+  for (let i = 1; i <= 4; i++) ok(!sys.includes(`工作记忆${String(i).padStart(2, '0')}`), `working 较旧的第 ${i} 条不注入`);
+  ok(sys.includes('核心认知甲') && sys.includes('核心认知乙'), 'core 全量注入（不受 8 条窗限制）');
+  ok(!sys.includes('限时事件记录'), 'ephemeral 不进每轮注入');
+  store.replace('memory/roleplay', { items: [], archive: [] }); // 还原
 }
 
 // ============ 4. memoryTick：提取链路 ============
@@ -216,9 +271,9 @@ section('memoryTick：≥6 条 → LLM 提取（重要性≥2 过滤、未知类
   eq(items.length, 3, 'importance=1 被过滤，余 3 条');
   ok(items.some(i => i.content === '用户叫小明' && i.importance === 5 && i.type === 'fact'), '高重要性事实入库');
   ok(items.some(i => i.type === 'fact' && i.content === '未知类型归 fact'), '未知类型兜底为 fact');
-  const chatData = store.get('chats/roleplay');
-  eq(chatData.userCountSince, 0, 'userCountSince 清零');
-  ok(!!chatData.lastExtractAt, 'lastExtractAt 记录');
+  ok(got[0].content.includes('现有记忆库') || got[0].content.includes('记忆库当前为空'), '提取 prompt 带记忆库状态（v0.5 合并前提）');
+  eq(activeSess().userCountSince, 0, '会话 userCountSince 清零');
+  ok(!!activeSess().lastExtractAt, 'lastExtractAt 记录');
 }
 
 section('memoryTick(force)/flushMemory：不足阈值但强制 → 补提取（会话尾部缺口收口）');
@@ -226,7 +281,7 @@ section('memoryTick(force)/flushMemory：不足阈值但强制 → 补提取（�
   let llmCalled = 0;
   llm.genericCompletion = async () => {
     llmCalled++;
-    return JSON.stringify([{ type: 'preference', content: '用户偏好简洁直接的沟通方式', importance: 4 }]);
+    return JSON.stringify([{ type: 'preference', content: '用户偏好纯思辨性哲学探讨', importance: 4 }]);
   };
   store.replace('memory/roleplay', { items: [] });
   store.replace('chats/roleplay', { messages: [{ role: 'user', content: '我们聊聊世界本质' }], userCountSince: 2, lastExtractAt: null });
@@ -234,7 +289,7 @@ section('memoryTick(force)/flushMemory：不足阈值但强制 → 补提取（�
   eq(done, true, 'flushMemory 返回 true');
   eq(llmCalled, 1, 'force 无视阈值调用 LLM');
   eq(store.get('memory/roleplay').items.length, 1, '尾部消息补提取入库');
-  eq(store.get('chats/roleplay').userCountSince, 0, '计数清零');
+  eq(activeSess().userCountSince, 0, '计数清零');
 }
 
 section('memoryTick：无未提取消息（since=0）→ 即使 force 也不调 LLM');

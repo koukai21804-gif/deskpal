@@ -1,4 +1,4 @@
-// 调度器：30s tick、触发先持久化再广播、错过补报、snooze、双通道触达（宠物气泡 + 系统通知 + 提示音）
+// 调度器：30s tick、触发先持久化再广播、错过补报、snooze、重复事件滚动续期、双通道触达（宠物气泡 + 系统通知 + 提示音）
 const { Notification } = require('electron');
 const dayjs = require('dayjs');
 const fs = require('fs');
@@ -11,6 +11,39 @@ const logger = require('../../logger');
 let timer = null;
 let data = null; // { version, events: [] }
 
+// 重复规则（repeat 功能）：daily=每天 / weekdays=工作日(周一至五) / weekly=每周。
+// 语义：事件按规则滚动续期——一次发生的提醒全部出清（fired/missed/cancelled）后，
+// start/deadline 整体平移到下一次发生并重新物化提醒；fired/missed 留痕封顶 10 条。
+const REPEATS = ['none', 'daily', 'weekdays', 'weekly'];
+const FIRED_HISTORY_CAP = 10;
+
+// 下一次发生时刻：严格晚于 after，保持时分秒。远 past 锚先按规则量级快进；
+// 迭代上限留足 weekends 跳过余量（weekdays 每周多耗 2 步）。
+const ROLL_ITER_CAP = 420;
+function nextOccurrence(anchor, repeat, after) {
+  if (!REPEATS.includes(repeat) || repeat === 'none') return null;
+  const limit = dayjs(after || undefined);
+  let t = dayjs(anchor);
+  if (!t.isValid()) return null;
+  if (t.isBefore(limit)) {
+    const back = repeat === 'weekly' ? ROLL_ITER_CAP * 7 : ROLL_ITER_CAP;
+    const snap = limit.subtract(back, 'day');
+    if (t.isBefore(snap)) {
+      t = snap.hour(t.hour()).minute(t.minute()).second(t.second()).millisecond(0);
+    }
+  }
+  for (let i = 0; i <= ROLL_ITER_CAP * 2 + 10; i++) {
+    if (repeat === 'daily') t = t.add(1, 'day');
+    else if (repeat === 'weekly') t = t.add(7, 'day');
+    else {
+      t = t.add(1, 'day');
+      while (t.day() === 0 || t.day() === 6) t = t.add(1, 'day');
+    }
+    if (t.isAfter(limit)) return t;
+  }
+  return null;
+}
+
 function file() { return path.join(store.getDataDir(), 'schedule', 'events.json'); }
 function save() { store.writeJSON('schedule/events.json', data); windows.broadcastAll('schedule:changed', {}); }
 function loadEvents() { data = store.get('schedule/events'); }
@@ -20,14 +53,15 @@ function newId(prefix) {
   return prefix + '_' + dayjs().format('YYYYMMDDHHmmss') + '_' + Math.random().toString(36).slice(2, 6);
 }
 
-function newEvent({ kind, title, notes = '', start = null, deadline = null, durationMin = null, remindPreset = 'none', source = 'manual', groupId = null }) {
+function newEvent({ kind, title, notes = '', start = null, deadline = null, durationMin = null, remindPreset = 'none', repeat = 'none', source = 'manual', groupId = null }) {
   return {
     id: newId('evt'), kind, title: String(title || '').slice(0, 30), notes: String(notes || '').slice(0, 200),
     start: start ? dayjs(start).format() : null,
     end: start && durationMin ? dayjs(start).add(durationMin, 'minute').format() : null,
     deadline: deadline ? dayjs(deadline).format() : null,
     durationMin: durationMin || null,
-    remindPreset, reminders: [],
+    remindPreset,
+    repeat: REPEATS.includes(repeat) ? repeat : 'none', reminders: [],
     status: 'pending', source, groupId,
     createdAt: dayjs().format(), updatedAt: dayjs().format(), doneAt: null,
   };
@@ -49,6 +83,9 @@ function materializeReminders(ev) {
   } else if (ev.remindPreset === 'start' && start) {
     mk(start.subtract(s.leadStart, 'minute'), `提前${s.leadStart}分钟`, 'lead');
     mk(start, '开始', 'atstart');
+  } else if (ev.remindPreset === 'only_start' && start) {
+    // 仅开始时刻提醒一次（repeat 提醒用：避免每天多响一次「提前N分钟」）
+    mk(start, '开始', 'atstart');
   } else if (ev.remindPreset === 'deadline' && deadline) {
     mk(deadline.subtract(s.leadDeadline, 'minute'), `提前${s.leadDeadline}分钟`, 'lead');
     mk(deadline, '截止', 'atdeadline');
@@ -59,8 +96,32 @@ function materializeReminders(ev) {
 // ---------- CRUD ----------
 function listEvents() { return data.events; }
 
+// 重复事件滚动续期：待触发提醒已全部出清时，把 start/deadline 平移到下一次发生
+// 并重新物化（fired 历史封顶保留）。非重复事件 / 仍有 pending 提醒时不动作。
+// remindPreset=none 的重复事件是惰性的（永不产生提醒）——不滚动，否则每个 tick
+// 都会空转顺延一天。
+function advanceRepeating(ev) {
+  if (!ev || ev.status !== 'pending' || !REPEATS.includes(ev.repeat) || ev.repeat === 'none') return false;
+  if (ev.remindPreset === 'none') return false;
+  if (ev.reminders.some(r => r.status === 'pending')) return false;
+  const anchor = ev.deadline ? dayjs(ev.deadline) : dayjs(ev.start);
+  const next = nextOccurrence(anchor, ev.repeat, dayjs());
+  if (!next) return false;
+  const deltaMin = next.diff(anchor, 'minute'); // 整体平移，保时长与时钟点
+  if (ev.start) ev.start = dayjs(ev.start).add(deltaMin, 'minute').format();
+  if (ev.end) ev.end = dayjs(ev.end).add(deltaMin, 'minute').format();
+  if (ev.deadline) ev.deadline = dayjs(ev.deadline).add(deltaMin, 'minute').format();
+  // fired/missed 历史封顶保留（错过补报的 missed 也是「发生过什么」的留痕）
+  const history = ev.reminders.filter(r => r.status === 'fired' || r.status === 'missed').slice(-FIRED_HISTORY_CAP);
+  materializeReminders(ev);
+  ev.reminders = [...history, ...ev.reminders];
+  ev.updatedAt = dayjs().format();
+  return true;
+}
+
 function addEvent(ev) {
   materializeReminders(ev);
+  advanceRepeating(ev); // 首物化即全过期（如「每天9点」在 14 点创建）→ 立刻顺延到下一次
   data.events.push(ev);
   save();
   return ev;
@@ -72,11 +133,12 @@ function updateEvent(patch) {
   const ev = findEvent(patch.id);
   if (!ev) throw new Error('日程不存在');
   Object.assign(ev, patch, { updatedAt: dayjs().format() });
-  // 时间/预设变化 → 重建未触发的 reminders（fired 保留历史）
-  if (patch.start !== undefined || patch.deadline !== undefined || patch.remindPreset !== undefined) {
+  // 时间/预设/重复变化 → 重建未触发的 reminders（fired 保留历史）
+  if (patch.start !== undefined || patch.deadline !== undefined || patch.remindPreset !== undefined || patch.repeat !== undefined) {
     const fired = ev.reminders.filter(r => r.status === 'fired');
     materializeReminders(ev);
     ev.reminders = [...fired, ...ev.reminders];
+    advanceRepeating(ev); // 重复事件改完后若全部已过期，立刻顺延到下一次
   }
   save();
   return ev;
@@ -171,6 +233,7 @@ function tick() {
           fire(ev, r, 0);
         }
       }
+      if (advanceRepeating(ev)) save(); // 重复事件提醒出清 → 滚动到下一次
     }
   } catch (e) { logger.error(e); }
 }
@@ -218,4 +281,5 @@ module.exports = {
   start, stop, tick, catchUp, fire,
   newEvent, materializeReminders, addEvent, updateEvent, deleteEvent, doneEvent,
   snoozeReminder, dismissReminder, listEvents, findEvent,
+  nextOccurrence, advanceRepeating, REPEATS,
 };

@@ -1,5 +1,5 @@
 // 窗口注册表：创建/复用/位置记忆（bounds 持久化到 settings.windows）
-const { BrowserWindow, screen } = require('electron');
+const { BrowserWindow, screen, shell } = require('electron');
 const path = require('path');
 const store = require('./services/store');
 const logger = require('./logger');
@@ -107,6 +107,22 @@ function createWindow(name) {
   win.webContents.on('before-input-event', (e, input) => {
     if (input.type === 'keyDown' && input.key === 'F12') { win.webContents.toggleDevTools(); e.preventDefault(); }
     if (input.type === 'keyDown' && input.key === 'r' && (input.control || input.meta)) e.preventDefault();
+  });
+
+  // 导航守卫（20261002 事故：消息里的链接被点击后，聊天窗自身被导航到外部网页，
+  // GitHub 404 顶掉了应用 UI）。规则：同页刷新放行；一切跨页导航拦截——http(s)
+  // 转系统浏览器打开，其余协议（file://、自定义协议等）静默拒绝。loadFile 的
+  // 程序化加载不触发 will-navigate，初始加载不受影响。
+  win.webContents.on('will-navigate', (e, url) => {
+    if (url === win.webContents.getURL()) return;
+    e.preventDefault();
+    if (/^https?:/i.test(url)) { shell.openExternal(url).catch(() => {}); }
+    logger.info(`[window:${name}] 已拦截窗口内导航，外链转系统浏览器: ${String(url).slice(0, 120)}`);
+  });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    // window.open / target=_blank 一律不在应用内开新窗：http(s) 交系统浏览器，其余拒绝
+    if (/^https?:/i.test(url)) { shell.openExternal(url).catch(() => {}); }
+    return { action: 'deny' };
   });
 
   win.webContents.on('console-message', (_e, level, message, line, sourceId) => {

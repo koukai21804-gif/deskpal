@@ -22,6 +22,15 @@
 .msg.system-notice .bubble { background: var(--dp-panel-2); color: var(--dp-text-muted); font-size: 12.5px; border-style: dashed; }
 .msg.error .bubble { border-color: var(--dp-danger); color: var(--dp-danger); font-size: 13px; }
 
+/* 戏外工作轮（/order 打标）highlight：琥珀色描边 + 角标，真话边界整轮标亮 */
+.msg.work .bubble { border-color: #d97706; box-shadow: 0 0 0 1px rgba(217,119,6,.55), 0 1px 4px rgba(0,0,0,.04); }
+.work-tag {
+  display: inline-block; font-size: 11px; line-height: 1.5; margin-bottom: 4px;
+  color: #b45309; background: rgba(217,119,6,.12); border: 1px solid rgba(217,119,6,.45);
+  border-radius: 4px; padding: 0 6px;
+}
+.msg.user.work .bubble .work-tag { color: #fff; background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.45); }
+
 .msg .ops {
   position: absolute; top: -12px; right: 6px; display: none; gap: 2px;
   background: var(--dp-panel); border: 1px solid var(--dp-border); border-radius: 7px; padding: 1px;
@@ -181,3 +190,56 @@
 .mem-imp { flex: none; font-size: 11px; color: #d9a02b; letter-spacing: 1px; }
 .mem-content { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mem-side { flex: none; display: flex; align-items: center; gap: 8px; }
+
+/* 本轮 API 消耗（模型用量回执汇总；供应商未报则不显示） */
+.token-meter {
+  margin-top: 6px; padding-top: 5px; border-top: 1px dashed var(--dp-border);
+  font-size: 11px; color: var(--dp-text-muted); letter-spacing: .2px;
+  font-variant-numeric: tabular-nums; user-select: text;
+}
+
+/* /discipline 记忆整理纪律查看面板（只读；角色无感知） */
+.disc-sec {
+  border: 1px solid var(--dp-border); border-radius: 10px; background: var(--dp-panel-2);
+  padding: 10px 12px; margin-bottom: 10px;
+}
+.disc-title { font-size: 13.5px; font-weight: 600; margin-bottom: 2px; }
+.disc-target { font-size: 11.5px; color: var(--dp-text-muted); margin-bottom: 6px; }
+.disc-items { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.disc-items li { font-size: 12.5px; line-height: 1.55; }
+
+/* ===== 会话栏（v0.5 多会话：主对话 + 专项会话） ===== */
+.session-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; border-bottom: 1px solid var(--dp-border);
+  background: var(--dp-panel);
+}
+.session-label { flex: none; font-size: 12px; color: var(--dp-text-muted); }
+.session-select {
+  flex: 1; min-width: 0; cursor: pointer;
+  border: 1px solid var(--dp-border); border-radius: 7px; background: var(--dp-panel-2);
+  color: var(--dp-text); padding: 4px 8px; font-size: 12.5px;
+}
+.session-select:focus { outline: none; border-color: var(--dp-accent); }
+
+/* 记忆面板：scope 层级选择器（core/working/ephemeral） */
+.mem-scope-sel {
+  flex: none; cursor: pointer; font-size: 11px; padding: 1px 4px;
+  border: 1px solid var(--dp-border); border-radius: 999px;
+  background: var(--dp-panel); color: var(--dp-text-muted);
+}
+.mem-scope-sel:focus { outline: none; border-color: var(--dp-accent); }
+
+/* 记忆面板：淘汰归档（可查看/恢复） */
+.mem-archive {
+  margin-top: 10px; border: 1px dashed var(--dp-border); border-radius: 9px;
+  background: var(--dp-panel-2); padding: 8px 10px;
+}
+.mem-archive summary { cursor: pointer; font-size: 12.5px; color: var(--dp-text-muted); user-select: none; }
+.mem-archive[open] summary { margin-bottom: 2px; }
+.mem-arc-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+.mem-arc-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border: 1px solid var(--dp-border); border-radius: 8px; background: var(--dp-panel);
+  padding: 6px 9px;
+}

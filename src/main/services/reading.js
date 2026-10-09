@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const dayjs = require('dayjs');
 const store = require('./store');
+const canon = require('./canon');
 const documents = require('./documents');
 const llm = require('./llm');
 const prompts = require('./prompts');
@@ -168,7 +169,7 @@ async function generate(bookId) {
       lib.updatedAt = dayjs().format(); store.writeJSON(libPath(bookId), lib);
       progress(bookId, 'outline', 5, '正在分析全书结构…');
 
-      const personaData = store.get('persona');
+      const personaData = canon.view();
       const pet = personaData.pet;
       const master = (personaData.user && String(personaData.user.name || '').trim()) || '主人';
       const outline = await genOutline(book);
@@ -259,7 +260,7 @@ async function ask(bookId, question) {
   const contextSection = lib.outline ? (lib.outline.find(s => s.sectionId === (curFrame && curFrame.sectionId)) || {}).title : '';
 
   const excerpts = relevantExcerpts(book ? book.text : '', question);
-  const personaData = store.get('persona');
+  const personaData = canon.view();
   const master = (personaData.user && String(personaData.user.name || '').trim()) || '主人';
   const messages = [{ role: 'system', content: prompts.readingQAPrompt(personaData.pet, master, question, excerpts, contextSection) }];
 

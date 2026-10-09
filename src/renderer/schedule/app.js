@@ -17,7 +17,7 @@ root.innerHTML = `
         <button class="btn" id="formAdd">📋 表单添加</button>
         <button class="btn" id="xlAdd">📄 导入 Excel</button>
       </div>
-      <div class="hint qa-tip" id="qaTip">说一句话就行：我会解析出时间并按类型自动设好提醒（事件提前 60 分钟、任务截止提前 120 分钟，可在设置调整）</div>
+      <div class="hint qa-tip" id="qaTip">说一句话就行：我会解析出时间并按类型自动设好提醒（事件提前 60 分钟、任务截止提前 120 分钟，可在设置调整）；也支持重复：试试「每天9点提醒我喝水」</div>
     </div>
     <div id="catchupHost"></div>
     <div class="week-strip" id="weekStrip"></div>
@@ -92,12 +92,20 @@ function openConfirmCard(ev, { fromParse = false, onSave } = {}) {
         <select id="f-preset">
           <option value="event" ${ev.remindPreset === 'event' ? 'selected' : ''}>事件：提前60分钟 + 开始时</option>
           <option value="start" ${ev.remindPreset === 'start' ? 'selected' : ''}>任务开始：提前5分钟 + 开始时</option>
+          <option value="only_start" ${ev.remindPreset === 'only_start' ? 'selected' : ''}>仅开始时（提醒一次）</option>
           <option value="deadline" ${ev.remindPreset === 'deadline' ? 'selected' : ''}>截止：提前120分钟 + 截止时</option>
           <option value="none" ${ev.remindPreset === 'none' ? 'selected' : ''}>不提醒</option>
         </select></div>
       <div class="field"><span class="label">开始时间</span><input type="datetime-local" id="f-start" value="${dtLocal(ev.start)}"></div>
       <div class="field"><span class="label">时长（分钟，可空）</span><input type="number" id="f-dur" min="5" max="1440" value="${ev.durationMin || ''}"></div>
       <div class="field"><span class="label">截止时间（任务可空）</span><input type="datetime-local" id="f-deadline" value="${dtLocal(ev.deadline)}"></div>
+      <div class="field"><span class="label">重复</span>
+        <select id="f-repeat">
+          <option value="none" ${!ev.repeat || ev.repeat === 'none' ? 'selected' : ''}>不重复</option>
+          <option value="daily" ${ev.repeat === 'daily' ? 'selected' : ''}>🔁 每天</option>
+          <option value="weekdays" ${ev.repeat === 'weekdays' ? 'selected' : ''}>🔁 每个工作日</option>
+          <option value="weekly" ${ev.repeat === 'weekly' ? 'selected' : ''}>🔁 每周</option>
+        </select></div>
       <div class="field"><span class="label">备注</span><input type="text" id="f-notes" value="${esc(ev.notes || '')}" maxlength="100"></div>
     </div>
     <div class="hint" id="f-hint"></div>`;
@@ -114,6 +122,7 @@ function openConfirmCard(ev, { fromParse = false, onSave } = {}) {
     durationMin: +m.body.querySelector('#f-dur').value || null,
     deadline: m.body.querySelector('#f-deadline').value ? m.body.querySelector('#f-deadline').value.replace('T', ' ') : null,
     remindPreset: m.body.querySelector('#f-preset').value,
+    repeat: m.body.querySelector('#f-repeat').value,
     notes: m.body.querySelector('#f-notes').value.trim(),
   });
 
@@ -306,9 +315,11 @@ function renderList() {
 function cardHTML(e) {
   const timeText = [e.start ? fmt(e.start) : null, e.deadline ? `截止 ${fmt(e.deadline)}` : null].filter(Boolean).join(' · ') || '无具体时间';
   const srcMap = { nl: '一句话', chat: '聊天', excel: 'Excel', manual: '手动' };
+  const repeatMap = { daily: '每天', weekdays: '工作日', weekly: '每周' };
   return `<div class="ev-card card ${e.status === 'done' ? 'done' : ''}" data-id="${e.id}">
     <div class="l1">
       <span class="badge ${e.kind}">${e.kind === 'task' ? '⚡任务' : '📅事件'}</span>
+      ${e.repeat && e.repeat !== 'none' ? `<span class="badge repeat">🔁${repeatMap[e.repeat] || e.repeat}</span>` : ''}
       <span class="ev-title">${esc(e.title)}</span>
       ${e.status === 'pending' ? `
       <button class="btn btn-sm" data-act="edit">编辑</button>

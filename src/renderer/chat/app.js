@@ -9,13 +9,15 @@ const EMO_LABEL = { normal: '平常', happy: '开心', surprised: '惊讶', angr
 const SCHEDULE_RE = /^(提醒我|帮我记一下|记一下|添加日程|加个日程)/;
 // 斜杠命令：长期记忆管理面板（与主进程 memory.js 同款；角色无感知）
 const MEMORY_CMD_RE = /^\s*\/\s*deep\s+memory\s+forcing\s*$/i;
-// 斜杠命令：用户身份档案面板 / 搜索账本面板（开发版；与主进程同款正则，角色无感知）
+// 斜杠命令：用户身份档案面板 / 搜索账本面板 / 记忆整理纪律查看（开发版；与主进程同款正则，角色无感知）
 const PROFILE_CMD_RE = /^\s*\/\s*user\s+profile\s*$/i;
 const SEARCH_CMD_RE = /^\s*\/\s*search\s+ledger\s*$/i;
+const DISCIPLINE_CMD_RE = /^\s*\/\s*discipline\s*$/i;
 
 let tab = 'roleplay';
-let streaming = null;           // { tab, reqId, el, raw, steps, changes, permTimers }
+let streaming = null;           // { tab, el, raw, steps, changes, permTimers, sessionId }
 let histories = { roleplay: [], quick: [] };
+let sessionInfo = { activeSessionId: '', sessions: [] }; // v0.5 多会话（仅 roleplay）
 
 const app = document.getElementById('app');
 app.appendChild(mountTitlebar('deskpal · 聊天'));
@@ -29,6 +31,18 @@ tabsEl.innerHTML = `
   <div class="tab" data-act="export" title="导出当前会话为 Markdown">📤 导出</div>
   <div class="tab" data-act="clear" title="清空当前会话">🧹 清空</div>`;
 app.appendChild(tabsEl);
+
+// 会话栏（v0.5）：主对话=日常角色扮演常驻；＋ 可开任意数量的专项会话（特定任务/场景扮演）。
+// 切换时主进程先把旧会话的未提取记忆固化入库，再落新 active——跨会话不丢长期信息。
+const sessionBar = document.createElement('div');
+sessionBar.className = 'session-bar';
+sessionBar.innerHTML = `
+  <span class="session-label">会话</span>
+  <select id="sessionSel" class="session-select" title="切换会话（切换前会自动固化未提取的记忆）"></select>
+  <button class="btn btn-sm" id="sessionNewBtn" title="新建专项会话（特定任务/场景，与主对话互不干扰）">＋ 专项会话</button>
+  <button class="btn btn-sm" id="sessionEditBtn" title="重命名 / 设置本会话主题">✏️</button>
+  <button class="btn btn-sm" id="sessionDelBtn" title="删除当前专项会话（主对话不可删）">🗑</button>`;
+app.appendChild(sessionBar);
 
 const main = document.createElement('div');
 main.className = 'chat-wrap';
@@ -77,17 +91,105 @@ tabsEl.addEventListener('click', async (e) => {
   if (t.dataset.act === 'clear') return doClear();
   tab = t.dataset.tab;
   tabsEl.querySelectorAll('.tab[data-tab]').forEach(x => x.classList.toggle('active', x.dataset.tab === tab));
+  sessionBar.style.display = tab === 'roleplay' ? '' : 'none';
   input.placeholder = tab === 'quick'
     ? '快问快答：直接问，我简洁回答（可以问知识、代码、命令…）'
     : '和宠物聊天…（"打开xx"可直接启动程序；"提醒我明天9点开会"直达日程）';
   renderAll();
 });
 
+// ---------- 会话栏 ----------
+function renderSessions() {
+  const sel = sessionBar.querySelector('#sessionSel');
+  sel.innerHTML = sessionInfo.sessions.map(s => {
+    const tag = s.kind === 'main' ? '主' : '专';
+    return `<option value="${esc(s.id)}" ${s.id === sessionInfo.activeSessionId ? 'selected' : ''}>${tag}｜${esc(s.name)}（${s.msgCount} 条）</option>`;
+  }).join('');
+  const cur = sessionInfo.sessions.find(s => s.id === sessionInfo.activeSessionId);
+  sessionBar.querySelector('#sessionDelBtn').style.display = cur && cur.kind === 'main' ? 'none' : '';
+}
+
+async function refreshSessions() {
+  try { sessionInfo = await dp.chatSessions(); renderSessions(); } catch (_) {}
+}
+
+async function reloadRoleplay() {
+  histories.roleplay = await dp.chatHistory('roleplay');
+  await refreshSessions();
+  renderAll();
+}
+
+sessionBar.querySelector('#sessionSel').addEventListener('change', async (e) => {
+  if (streaming && streaming.tab === 'roleplay') {
+    toast('正在生成中，等这轮结束再切换会话', 'warn');
+    renderSessions(); // 还原下拉
+    return;
+  }
+  try {
+    await dp.chatSessionSwitch(e.target.value);
+    await reloadRoleplay();
+    const cur = sessionInfo.sessions.find(s => s.id === sessionInfo.activeSessionId);
+    toast(`已切换到「${cur ? cur.name : ''}」（切换前已固化未提取的记忆）`, 'ok');
+  } catch (err) { toast(errText(err), 'error'); renderSessions(); }
+});
+
+sessionBar.querySelector('#sessionNewBtn').addEventListener('click', () => {
+  if (streaming && streaming.tab === 'roleplay') return toast('正在生成中，稍后再新建', 'warn');
+  openSessionModal('new');
+});
+sessionBar.querySelector('#sessionEditBtn').addEventListener('click', () => {
+  const cur = sessionInfo.sessions.find(s => s.id === sessionInfo.activeSessionId);
+  if (cur) openSessionModal('edit', cur);
+});
+sessionBar.querySelector('#sessionDelBtn').addEventListener('click', async () => {
+  const cur = sessionInfo.sessions.find(s => s.id === sessionInfo.activeSessionId);
+  if (!cur || cur.kind === 'main') return;
+  if (!(await confirmBox(`删除专项会话「${cur.name}」？其中未提取记忆的对话内容将一并丢弃（已入长期记忆的不受影响）。`, { danger: true, okText: '删除' }))) return;
+  try {
+    await dp.chatSessionDelete(cur.id);
+    await reloadRoleplay();
+    toast('已删除（活跃会话回到主对话）', 'ok');
+  } catch (err) { toast(errText(err), 'error'); }
+});
+
+// 新建/编辑会话弹窗：名称 + 一句话主题（主题会注入角色上下文的【当前会话】卡）
+function openSessionModal(mode, cur = null) {
+  const { body, close } = openModal({ title: mode === 'new' ? '＋ 新建专项会话' : '✏️ 会话设置', width: '460px' });
+  body.innerHTML = `
+    <p class="hint" style="margin:2px 0 10px">专项会话与主对话互不共享聊天记录——适合具体任务（如「整理游戏卡牌数据」）或专项场景扮演。长期记忆与身份档案仍然共用；跨会话想用的信息让宠物「记住」即可。</p>
+    <div class="field"><span class="label">会话名称</span>
+      <input type="text" id="ss-name" maxlength="24" placeholder="如：游戏数据整理 / 深夜电台扮演" value="${esc(cur ? cur.name : '')}"></div>
+    <div class="field"><span class="label">主题（一句话，可选；会注入角色上下文）</span>
+      <input type="text" id="ss-goal" maxlength="120" placeholder="如：整理角色立绘的命名规范" value="${esc(cur ? cur.goal : '')}"></div>
+    <div class="row" style="margin-top:12px;justify-content:flex-end">
+      <button class="btn btn-sm" data-a="cancel">取消</button>
+      <button class="btn btn-sm btn-primary" data-a="ok">${mode === 'new' ? '创建并切换' : '保存'}</button>
+    </div>`;
+  body.querySelector('[data-a=cancel]').addEventListener('click', () => close());
+  body.querySelector('[data-a=ok]').addEventListener('click', async () => {
+    const name = body.querySelector('#ss-name').value.trim();
+    const goal = body.querySelector('#ss-goal').value.trim();
+    try {
+      if (mode === 'new') {
+        await dp.chatSessionNew({ name, goal });
+        await reloadRoleplay();
+        toast('已创建并切换到新会话', 'ok');
+      } else {
+        await dp.chatSessionRename(cur.id, { name, goal });
+        await reloadRoleplay();
+        toast('会话已更新', 'ok');
+      }
+      close();
+    } catch (err) { toast(errText(err), 'error'); }
+  });
+}
+
 // ---------- 消息渲染 ----------
 function msgEl(m) {
   const el = document.createElement('div');
   const kind = m.role === 'user' ? 'user' : m.role === 'system' ? 'system-notice' : m.error ? 'error' : 'assistant';
-  el.className = 'msg ' + kind;
+  // 戏外工作轮（/order 打标）消息 highlight（用户决策 2026-09-29）：真话边界整轮标亮
+  el.className = 'msg ' + kind + (m.work ? ' work' : '');
   el.dataset.id = m.id;
   const avatar = m.role === 'user' ? '🧑' : m.role === 'system' ? '' : '🟢';
   const bodyHTML = m.error
@@ -96,6 +198,9 @@ function msgEl(m) {
       ? esc(m.content)
       : renderMD(m.content || '');
   const emoHtml = m.emotion ? `<span class="emo-dot ${m.emotion}" title="${EMO_LABEL[m.emotion] || ''}"></span>` : '';
+  // 本轮 API 消耗（模型用量回执汇总；供应商未报用量时不显示）
+  const usageText = m.role === 'assistant' ? usageMeterText(m.usage) : '';
+  const usageHtml = usageText ? `<div class="token-meter" title="本轮 API 消耗（上游用量回执汇总，仅供参考）">⚡ ${esc(usageText)}</div>` : '';
   const opsHtml = m.role !== 'system'
     ? `<div class="ops">
         <button data-op="copy">复制</button>
@@ -106,7 +211,9 @@ function msgEl(m) {
     ${avatar ? `<div class="avatar">${avatar}</div>` : ''}
     <div class="bubble">
       ${opsHtml}
+      ${m.work ? '<div class="work-tag">戏外 · 工作轮</div>' : ''}
       <div class="md body">${bodyHTML}</div>
+      ${usageHtml}
       ${emoHtml ? `<div class="meta">${emoHtml}<span class="small muted">${EMO_LABEL[m.emotion] || ''}</span></div>` : ''}
       <div class="agent-area"></div>
       <div class="sch-slot"></div>
@@ -343,7 +450,9 @@ function renderAll() {
   list.innerHTML = '';
   const hist = histories[tab];
   if (!hist.length) {
-    list.innerHTML = `<div class="empty">${tab === 'roleplay' ? '和你的宠物聊聊吧～它会记住重要的事' : '问点什么，我直接回答'}</div>`;
+    const sess = sessionInfo.sessions.find(s => s.id === sessionInfo.activeSessionId);
+    const sessName = tab === 'roleplay' && sess ? `「${sess.name}」` : '';
+    list.innerHTML = `<div class="empty">${tab === 'roleplay' ? `这是${sessName}的开头——和你的宠物聊聊吧，重要的事它会记住` : '问点什么，我直接回答'}</div>`;
     return;
   }
   for (const m of hist) list.appendChild(msgEl(m));
@@ -377,6 +486,9 @@ async function send(text) {
     }
     if (SEARCH_CMD_RE.test(text)) {
       input.value = ''; autoGrow(); openSearchLedger(); return;
+    }
+    if (DISCIPLINE_CMD_RE.test(text)) {
+      input.value = ''; autoGrow(); openDisciplineModal(); return;
     }
   }
 
@@ -417,8 +529,20 @@ async function send(text) {
   setStreamUI(true);
 
   try {
-    const { reqId } = await dp.chatSend(tab, text);
-    streaming.reqId = reqId;
+    const res = await dp.chatSend(tab, text);
+    // 主进程兜底命中斜杠命令（渲染层正则失效时）：撤销本地用户消息与流式气泡，按命令类型接管
+    if (res && (res.memoryCommand || res.profileCommand || res.ledgerCommand || res.disciplineCommand)) {
+      streaming = null;
+      setStreamUI(false);
+      el.remove();
+      const ui = histories[tab].findIndex(x => x.role === 'user' && x.content === text);
+      if (ui >= 0) { histories[tab].splice(ui, 1); renderAll(); }
+      if (res.disciplineCommand) openDisciplineModal();
+      return;
+    }
+    if (res.work) userMsg.work = true; // 主进程通道判定回填，renderAll 时用户气泡带「戏外」标
+    if (res.sessionId) streaming.sessionId = res.sessionId;
+    streaming.reqId = res.reqId;
   } catch (err) {
     streaming = null;
     setStreamUI(false);
@@ -440,8 +564,15 @@ dp.on('llm:chunk', ({ tab: t, reqId, delta, beat }) => {
   if (beat) dp.petEmote(beat, 'chat', t === 'roleplay' ? 0 : 6000);
 });
 
-dp.on('llm:done', async ({ tab: t, reqId, clean, emotion, schedule, aborted, beats, runId, changes, msgId }) => {
+dp.on('llm:done', async ({ tab: t, reqId, clean, emotion, schedule, aborted, beats, runId, changes, msgId, usage, sessionId }) => {
   if (!streaming || streaming.tab !== t) return;
+  // 会话守卫：回复落在了另一个会话（极端情况：流式期间会话被外部切换）——本地不再渲染，
+  // 消息已由主进程存进它自己的会话，切回去自然可见
+  if (t === 'roleplay' && sessionId && sessionInfo.activeSessionId && sessionId !== sessionInfo.activeSessionId) {
+    streaming = null;
+    setStreamUI(false);
+    return;
+  }
   const el = streaming.el;
   const localSteps = streaming.steps;
   const localChanges = streaming.changes || changes || null;
@@ -456,6 +587,7 @@ dp.on('llm:done', async ({ tab: t, reqId, clean, emotion, schedule, aborted, bea
     runId: runId || undefined,
     steps: localSteps && localSteps.length ? localSteps : undefined,
     changes: localChanges || undefined,
+    usage: usage || undefined,
   };
   histories[t].push(msg);
   renderAll();
@@ -546,17 +678,21 @@ sendBtn.addEventListener('click', () => send(input.value));
 
 // ---------- 长期记忆管理面板（/deep memory forcing；角色无感知） ----------
 const MEM_TYPE_LABEL = { relationship: '关系', event: '事件', fact: '事实', preference: '偏好' };
+const MEM_SCOPE_LABEL = { core: 'core·身份级', working: 'working·滚动', ephemeral: 'ephemeral·限时' };
 async function openMemoryManager() {
-  const { body } = openModal({ title: '🧠 长期记忆 · 角色无感知', width: '620px' });
+  const { body } = openModal({ title: '🧠 长期记忆 · 角色无感知', width: '680px' });
 
   async function refresh() {
-    let items = [];
-    try { items = await dp.memoryList(); } catch (err) { toast(errText(err), 'error'); }
+    let items = [], coreUsage = { used: 0, budget: 1000 }, archive = [];
+    try {
+      [items, coreUsage, archive] = await Promise.all([dp.memoryList(), dp.memoryCoreUsage(), dp.memoryArchiveList().catch(() => [])]);
+    } catch (err) { toast(errText(err), 'error'); }
     body.innerHTML = `
-      <p class="hint" style="margin:4px 0 10px">这里是宠物的长期记忆（伪史），按重要性前 10 条每轮注入角色上下文。本面板的查看/添加/删除不会进入聊天记录，角色不会察觉这次管理。打开本面板时会自动补提取未入库的近期对话，请稍候片刻。</p>
+      <p class="hint" style="margin:4px 0 10px">宠物的长期记忆，分三层：<b>core</b>（身份级认知，全量每轮注入，共 ${coreUsage.used}/${coreUsage.budget} 字，不自动淘汰）、<b>working</b>（滚动记忆，最近 8 条注入）、<b>ephemeral</b>（限时事件，默认 14 天过期进归档，不注入）。本面板的查看/添加/删除/改层/恢复归档不进聊天记录，角色不会察觉。打开本面板时会自动补提取未入库的近期对话。</p>
       <div class="mem-add">
         <select id="memType">${Object.entries(MEM_TYPE_LABEL).map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
         <select id="memImp">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${n === 3 ? 'selected' : ''}>${'★'.repeat(n)}</option>`).join('')}</select>
+        <select id="memScope">${Object.entries(MEM_SCOPE_LABEL).map(([v, l]) => `<option value="${v}" ${v === 'working' ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <input id="memContent" type="text" maxlength="60" placeholder="新增记忆内容（≤60字）…">
         <button class="btn btn-sm btn-primary" id="memAddBtn">添加</button>
       </div>
@@ -565,8 +701,10 @@ async function openMemoryManager() {
           <div class="mem-item">
             <div class="mem-main">
               <span class="mem-type t-${esc(it.type)}">${MEM_TYPE_LABEL[it.type] || esc(it.type)}</span>
+              <select class="mem-scope-sel" data-id="${esc(it.id)}" title="记忆层级">${Object.entries(MEM_SCOPE_LABEL).map(([v, l]) => `<option value="${v}" ${it.scope === v ? 'selected' : ''}>${l.split('·')[0]}</option>`).join('')}</select>
               <span class="mem-imp" title="重要性 ${it.importance}/5">${'★'.repeat(Math.max(1, Math.min(5, it.importance || 1)))}</span>
               <span class="mem-content" title="${esc(it.content)}">${esc(it.content)}</span>
+              ${it.note ? `<span class="hint" title="${esc(it.note)}">⚠</span>` : ''}
             </div>
             <div class="mem-side">
               <span class="small muted">${esc(String(it.createdAt || '').slice(0, 10))}</span>
@@ -574,30 +712,63 @@ async function openMemoryManager() {
             </div>
           </div>`).join('')
         : '<p class="hint" style="text-align:center;padding:18px 0">暂无长期记忆——聊到重要信息（每 6 条用户消息 / 会话冷却后 / 打开本面板时）会自动提取；角色也会在你说「记住…」时主动写入。也可在上方手动添加。</p>'}
-      </div>`;
+      </div>
+      <details class="mem-archive" ${archive.length ? '' : 'hidden'}>
+        <summary>🗄 淘汰归档（${archive.length}）——过期/库满时移出的记忆，可恢复</summary>
+        <p class="hint" style="margin:6px 0 8px">恢复 = 重新确认：条目回到记忆库并按最新计入注入顺位；若库已满（50 条），会如实顶掉另一条最旧记忆进归档（下方操作回执会注明）。已过期的限时事件恢复后自动转为 working 长期记忆。</p>
+        <div class="mem-arc-list">
+          ${archive.map(e => `
+            <div class="mem-arc-item">
+              <div class="mem-main">
+                <span class="mem-type t-${esc(e.type)}">${MEM_TYPE_LABEL[e.type] || esc(e.type)}</span>
+                <span class="badge ${e.reason === 'ttl' ? 'n' : 'a'}">${e.reason === 'ttl' ? '限时到期' : '库满腾位'}</span>
+                <span class="mem-content" title="${esc(e.content)}">${esc(e.content)}</span>
+              </div>
+              <div class="mem-side">
+                <span class="small muted" title="原记忆日期｜归档日期">${esc(String(e.createdAt || '').slice(0, 10))} → ${esc(String(e.archivedAt || '').slice(0, 10))}</span>
+                <button class="btn btn-sm" data-arc-restore="${esc(e.id)}">↩ 恢复</button>
+              </div>
+            </div>`).join('')}
+        </div>
+      </details>`;
     const contentInput = body.querySelector('#memContent');
     const addBtn = body.querySelector('#memAddBtn');
     const doAdd = async () => {
       const content = contentInput.value.trim();
       if (!content) return toast('记忆内容不能为空', 'error');
       try {
-        await dp.memoryAdd({ type: body.querySelector('#memType').value, importance: +body.querySelector('#memImp').value, content });
+        await dp.memoryAdd({ type: body.querySelector('#memType').value, importance: +body.querySelector('#memImp').value, scope: body.querySelector('#memScope').value, content });
         toast('已添加记忆', 'ok');
         refresh();
       } catch (err) { toast(errText(err), 'error'); }
     };
     addBtn.addEventListener('click', doAdd);
     contentInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) doAdd(); });
+    body.querySelectorAll('.mem-scope-sel').forEach(sel => sel.addEventListener('change', async () => {
+      try { await dp.memorySetScope(sel.dataset.id, sel.value); toast('层级已调整', 'ok'); refresh(); }
+      catch (err) { toast(errText(err), 'error'); refresh(); }
+    }));
     body.querySelectorAll('[data-del]').forEach(btn => btn.addEventListener('click', async () => {
       if (!(await confirmBox('删除这条长期记忆？角色将不再记得它。', { okText: '删除', danger: true }))) return;
       try { await dp.memoryDelete(btn.dataset.del); toast('已删除', 'ok'); refresh(); } catch (err) { toast(errText(err), 'error'); }
+    }));
+    // 归档恢复：回执如实转告「为腾位又归档了什么」「过期限时事件已转 working」
+    body.querySelectorAll('[data-arc-restore]').forEach(btn => btn.addEventListener('click', async () => {
+      try {
+        const r = await dp.memoryArchiveRestore(btn.dataset.arcRestore);
+        const parts = [`已恢复：${r.content}`];
+        if (r.evicted && r.evicted.length) parts.push(`库已满，为腾位又归档了 ${r.evicted.length} 条最旧记忆（${r.evicted.map(e => esc(e.content)).join('、')}）`);
+        if (r.note) parts.push(r.note);
+        toast(parts.join('；'), 'ok', 5000);
+        refresh();
+      } catch (err) { toast(errText(err), 'error'); refresh(); }
     }));
   }
   await refresh();
 }
 
 // ---------- 用户身份档案面板（/user profile；角色无感知） ----------
-const LAYER_CN = { P1: 'P1 性格与相处', P2: 'P2 近况与工作', P3: 'P3 关系档案' };
+const LAYER_CN = { P1: 'P1 性格与相处', P2: 'P2 职业与经济（稳定层）', P2b: 'P2b 项目流水（高频滚动，满 20 自动归档最旧的）', P3: 'P3 关系档案' };
 let profileModalBody = null;
 async function openProfileManager() {
   const { body } = openModal({ title: '🪪 用户身份档案 · 角色无感知', width: '680px' });
@@ -618,19 +789,19 @@ async function openProfileManager() {
 
   function renderProfile(d) {
     body.innerHTML = `
-      <p class="hint" style="margin:4px 0 10px">「宠物对你的长期认知」档案，分层组织：P0=身份基座；P1=性格与相处（生理节奏/认知/价值动机/情绪关系/交互偏好）；P2=近况与工作（职业项目/经济结构）；P3=关系档案/元规则。待验证的猜测不写入（假设未验证不得当结论）。P1–P3 随角色扮演对话自动漂移更新（每 6 条消息提取一次），全部变更落在下方日志可回滚。每层上限 30 字段、单字段 240 字、P0 1200 字；注入 system prompt 带预算闸（超出按 P3→P2→P1 截断并注明）。面板操作不进聊天记录。</p>
+      <p class="hint" style="margin:4px 0 10px">「宠物对你的长期认知」档案，分层对照 senpai-model 十组架构：P0=身份基座（A组）；P1=生理节奏/认知架构/价值动机/情绪关系/交互偏好（B–F组）；P2=职业与经济稳定层（G–H组）；<b>P2b=项目流水层（v0.5 新增：项目进展/里程碑/工具链/单次审计结论，高频覆盖，满载自动归档）</b>；P3=关系档案/元规则（E6-8、I组）。P1–P3 随对话自动漂移（每 6 条消息一次），全部变更落在下方日志可回滚。每层上限 P1/P2/P3=30、P2b=20、单字段 240 字；注入预算 12000 字符（超出按 P2b→P2→P3 优先级截断并注明）。面板操作不进聊天记录。</p>
       <div class="row" style="gap:16px;margin-bottom:8px">
         <label class="row" style="gap:6px"><input type="checkbox" id="pf-enabled" ${d.enabled !== false ? 'checked' : ''}> 注入角色上下文</label>
         <label class="row" style="gap:6px"><input type="checkbox" id="pf-drift" ${d.drift !== false ? 'checked' : ''}> 允许对话漂移更新</label>
       </div>
       <div class="row" style="margin-bottom:8px">
-        <button class="btn btn-sm" id="pf-import">📥 导入预填文件（分层档案全量字段，只补空缺不覆盖）</button>
+        <button class="btn btn-sm" id="pf-import">📥 导入预填文件（senpai-model 全量字段，只补空缺不覆盖）</button>
         <span class="hint" id="pf-import-result"></span>
       </div>
-      <div class="field"><span class="label">P0 身份锚（年龄/性别/所在地/学历/信仰/婚姻家庭/称呼体系等长期稳定事实，任何对话必须正确；漂移锁定，仅此处可编辑）</span>
-        <textarea id="pf-p0" rows="6" maxlength="1200" placeholder="示例：年龄段，所在地区，职业底色，家庭状况…（请按真实情况填写，仅保存在本机）">${esc(d.P0 || '')}</textarea></div>
-      ${['P1', 'P2', 'P3'].map(L => `
-        <div class="field" style="margin-top:10px"><span class="label">${LAYER_CN[L]}${L === 'P2' ? '（高频更新）' : ''}</span>
+      <div class="field"><span class="label">P0 身份锚（A组 7 字段：年龄/性别/所在地/学历/信仰/婚姻家庭/称呼体系，任何对话必须正确；漂移锁定，仅此处可编辑）</span>
+        <textarea id="pf-p0" rows="6" maxlength="1200" placeholder="例：年龄段，所在城市，职业，家庭/信仰状况……">${esc(d.P0 || '')}</textarea></div>
+      ${['P1', 'P2', 'P2b', 'P3'].map(L => `
+        <div class="field" style="margin-top:10px"><span class="label">${LAYER_CN[L]}${L === 'P2b' ? '' : L === 'P2' ? '' : ''}</span>
           <div id="pf-${L}">${kvRows(L, d[L])}</div>
           <button class="btn btn-sm" data-a="add-kv" data-layer="${L}">＋ 添加字段</button>
         </div>`).join('')}
@@ -639,7 +810,7 @@ async function openProfileManager() {
         <span class="hint grow" id="pf-saved"></span>
       </div>
       <h4 style="margin:10px 0 6px">变更日志（${(d.log || []).length}）</h4>
-      <div class="pf-log" style="max-height:240px;overflow:auto">
+      <div class="pf-log" style="max-height:220px;overflow:auto">
         ${(d.log || []).slice().reverse().map(e => `
           <div class="prof-log-item" style="padding:6px 0;border-bottom:1px dashed var(--dp-border);font-size:12px">
             <div class="row" style="gap:6px;align-items:center">
@@ -654,7 +825,9 @@ async function openProfileManager() {
             ${e.quote ? `<div class="hint">依据：「${esc(e.quote)}」 · ${esc(e.reason || '')}</div>` : ''}
             ${e.source === 'drift' && e.applied && !e.revertedAt ? `<button class="btn btn-sm" style="margin-top:4px" data-a="revert" data-id="${esc(e.id)}">↩ 回滚这条</button>` : ''}
           </div>`).join('') || '<p class="hint" style="padding:8px 0">暂无变更。角色扮演聊天中出现的身份信息变化会自动漂移到这里。</p>'}
-      </div>`;
+      </div>
+      <h4 style="margin:12px 0 6px">满载归档 <span class="hint" id="pf-arc-n"></span></h4>
+      <div id="pf-archive" class="pf-log" style="max-height:160px;overflow:auto"><p class="hint" style="padding:8px 0">加载中…</p></div>`;
 
     // 交互：加/删字段行
     body.querySelectorAll('[data-a=add-kv]').forEach(btn => btn.addEventListener('click', () => {
@@ -686,7 +859,7 @@ async function openProfileManager() {
         enabled: body.querySelector('#pf-enabled').checked,
         drift: body.querySelector('#pf-drift').checked,
         P0: body.querySelector('#pf-p0').value,
-        P1: collectLayer('P1'), P2: collectLayer('P2'), P3: collectLayer('P3'),
+        P1: collectLayer('P1'), P2: collectLayer('P2'), P2b: collectLayer('P2b'), P3: collectLayer('P3'),
         log: doc.log || [],
       };
       try {
@@ -696,14 +869,14 @@ async function openProfileManager() {
         renderProfile(saved); // 重渲染：清洗后的 key/value（超长截断等）立即可见
       } catch (err) { toast(errText(err), 'error'); }
     });
-    // 导入预填文件（分层档案全量字段；fill-empty：已有值一律保留；文件由主进程读取）
+    // 导入预填文件（senpai-model 全量字段；fill-empty：已有值一律保留；文件由主进程读取）
     body.querySelector('#pf-import').addEventListener('click', async () => {
-      const p = await dp.pickFile({ title: '选择档案预填 JSON（本机种子文件，不入库不上传）', filters: [{ name: 'JSON', extensions: ['json'] }] });
+      const p = await dp.pickFile({ title: '选择档案预填 JSON（如 docs/profile-seed.json）', filters: [{ name: 'JSON', extensions: ['json'] }] });
       if (!p) return;
       const res = body.querySelector('#pf-import-result');
       try {
         const r = await dp.profileSeed(p);
-        res.textContent = `✓ 新增 P0 ${r.added.P0} / P1 ${r.added.P1} / P2 ${r.added.P2} / P3 ${r.added.P3} 字段（已有值未动）`;
+        res.textContent = `✓ 新增 P0 ${r.added.P0} / P1 ${r.added.P1} / P2 ${r.added.P2} / P2b ${r.added.P2b} / P3 ${r.added.P3} 字段（已有值未动）`;
         toast('预填导入完成', 'ok');
         doc = await dp.profileGet();
         renderProfile(doc);
@@ -718,6 +891,31 @@ async function openProfileManager() {
         renderProfile(doc);
       } catch (err) { toast(errText(err), 'error'); }
     }));
+    // 满载归档：查看 + 一键还原（还原时若目标层已满，主进程会先归档腾位）
+    (async () => {
+      const box = body.querySelector('#pf-archive');
+      if (!box || !box.isConnected) return;
+      let arc = [];
+      try { arc = await dp.profileArchiveList(); } catch (_) {}
+      body.querySelector('#pf-arc-n').textContent = arc.length ? `（${arc.length} 条）` : '（空）';
+      box.innerHTML = arc.length ? arc.map((e, i) => `
+        <div style="padding:6px 0;border-bottom:1px dashed var(--dp-border);font-size:12px">
+          <div class="row" style="gap:6px;align-items:center">
+            <span class="badge a">${esc(e.layer)}</span><b>${esc(e.key)}</b>
+            <span class="grow"></span><span class="muted small">${esc(String(e.at || '').replace('T', ' ').slice(0, 16))}</span>
+            ${e.restoredAt ? '<span class="hint">（已还原）</span>' : `<button class="btn btn-sm" data-a="arc-restore" data-i="${i}">↩ 还原</button>`}
+          </div>
+          <div class="hint">${esc(e.value)}</div>
+        </div>`).join('') : '<p class="hint" style="padding:8px 0">还没有满载归档。P2b 满载即时归档、P2 满载高频（30 天 ≥3 次）归档，被腾位的条目会出现在这里。</p>';
+      box.querySelectorAll('[data-a=arc-restore]').forEach(btn => btn.addEventListener('click', async () => {
+        try {
+          await dp.profileArchiveRestore(btn.dataset.i);
+          toast('已还原到档案', 'ok');
+          doc = await dp.profileGet();
+          renderProfile(doc);
+        } catch (err) { toast(errText(err), 'error'); }
+      }));
+    })();
   }
 }
 
@@ -725,6 +923,53 @@ async function openProfileManager() {
 const STATUS_CN = { ok: '✓ 成功', blocked: '⛔ 拦截', denied: '🚫 拒绝', failed: '✗ 失败', cached: '♻ 缓存' };
 const TRACK_CN = { designated: '指定轨', autonomous: '自主轨' };
 let ledgerModalBody = null, ledgerRange = 'all';
+// ---------- 本轮 API 消耗外显（模型用量回执汇总） ----------
+// 输入=prompt_tokens（含缓存命中拆分）；思考=reasoning_tokens；回复=completion−思考。
+// 供应商不报的维度不显示（不造数）；agent 轮含多次请求时为合计并注次数。
+// 有效消耗：缓存命中部分按 ~1/10 计价（DeepSeek 前缀缓存口径），未命中全价——
+// 多轮工具任务的原始输入累加会很大，但大头被缓存吸收，这个数才接近真实账单。
+function usageMeterText(u) {
+  if (!u || (u.input == null && u.output == null)) return '';
+  const n = (x) => (x == null ? null : Math.round(x).toLocaleString('en-US'));
+  const parts = [];
+  if (n(u.input) != null) {
+    parts.push('输入 ' + n(u.input) + (u.cacheHit != null ? `（命中 ${n(u.cacheHit)}）` : ''));
+    if (u.cacheHit != null && u.cacheHit > 0 && u.input > u.cacheHit) {
+      const effective = Math.round(u.input - u.cacheHit + u.cacheHit * 0.1);
+      parts.push('有效 ≈ ' + effective.toLocaleString('en-US'));
+    }
+  }
+  if (n(u.output) != null) {
+    if (u.reasoning != null) {
+      const visible = Math.max(0, Math.round(u.output) - Math.round(u.reasoning));
+      parts.push('思考 ' + n(u.reasoning), '回复 ' + n(visible));
+    } else {
+      parts.push('回复 ' + n(u.output) + '（含思考）');
+    }
+  }
+  if (u.requests > 1) parts.push(u.requests + ' 次调用');
+  return parts.join(' · ');
+}
+
+async function openDisciplineModal() {
+  const { body } = openModal({ title: '📐 记忆整理纪律 · 角色无感知', width: '640px' });
+  body.innerHTML = '<p class="hint" style="padding:12px">加载中…</p>';
+  let sections;
+  try { sections = await dp.disciplineView(); } catch (err) { body.innerHTML = `<p class="hint">加载失败：${esc(errText(err))}</p>`; return; }
+  const order = ['extract', 'drift', 'overwrite'];
+  const keys = Object.keys(sections || {}).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  body.innerHTML = `
+    <p class="hint" style="margin:4px 0 10px">以下是约束「记忆/档案自动整理行为」的纪律条款——注入在主进程的整理提示词与工具回执里，角色本身看不到这份清单（不进聊天历史、不进角色上下文）。这里只读展示，供你核对角色没有违背它们。</p>
+    ${keys.map(k => {
+      const s = sections[k] || {};
+      return `<div class="disc-sec">
+        <div class="disc-title">${esc(s.title || k)}</div>
+        <div class="disc-target">${esc(s.target || '')}</div>
+        <ul class="disc-items">${(s.items || []).map(it => `<li>${esc(it)}</li>`).join('')}</ul>
+      </div>`;
+    }).join('')}`;
+}
+
 async function openSearchLedger() {
   const { body } = openModal({ title: '🌐 联网搜索账本 · 角色无感知', width: '700px' });
   ledgerModalBody = body;
@@ -791,7 +1036,9 @@ async function doExport() {
 }
 async function doClear() {
   if (!histories[tab].length) return;
-  if (!(await confirmBox(`清空「${tab === 'roleplay' ? '角色扮演' : '快问'}」的全部聊天记录？`, { danger: true, okText: '清空' }))) return;
+  const sess = sessionInfo.sessions.find(s => s.id === sessionInfo.activeSessionId);
+  const label = tab === 'roleplay' && sess ? `会话「${sess.name}」` : (tab === 'roleplay' ? '当前会话' : '「快问」');
+  if (!(await confirmBox(`清空${label}的全部聊天记录？（只清这一条时间线，其他会话与长期记忆不受影响）`, { danger: true, okText: '清空' }))) return;
   histories[tab] = [];
   await dp.chatSaveHistory(tab, []);
   renderAll();
@@ -800,6 +1047,7 @@ async function doClear() {
 // ---------- 启动 ----------
 (async function boot() {
   await initTheme();
+  await refreshSessions();
   histories.roleplay = await dp.chatHistory('roleplay');
   histories.quick = await dp.chatHistory('quick');
   try {

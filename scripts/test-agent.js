@@ -283,7 +283,7 @@ const tools = require(path.join(ROOT, 'src/main/services/agent/builtin'));
 
 {
   const list = tools.list();
-  eq(list.map(t => t.name).sort(), ['list_dir', 'read_file', 'save_memory', 'web_search', 'write_file'], '五件套注册（含 web_search）');
+  eq(list.map(t => t.name).sort(), ['add_reminder', 'list_dir', 'read_file', 'save_memory', 'web_search', 'write_file'], '六件套注册（含 web_search 与 add_reminder）');
   const wf = list.find(t => t.name === 'write_file');
   ok(wf.enabled, 'write_file 已转正启用');
   ok(wf.params.reason, 'write_file 含 reason 参数');
@@ -293,7 +293,7 @@ const tools = require(path.join(ROOT, 'src/main/services/agent/builtin'));
   ok(wst && wst.enabled && wst.permission === 'read', 'web_search 已注册（read 权限，闸在 handler）');
   eq(tools.RESULT_CAPS.web_search, 12000, 'web_search 回填上限 12000');
   const schemas = tools.openAiSchemas();
-  eq(schemas.length, 5, 'OpenAI schema 数量');
+  eq(schemas.length, 6, 'OpenAI schema 数量');
   const wfSchema = schemas.find(s => s.function.name === 'write_file');
   ok(wfSchema.function.parameters.properties.reason, 'schema 含 reason');
   ok(wfSchema.function.parameters.required.includes('reason'), 'reason 为必填');

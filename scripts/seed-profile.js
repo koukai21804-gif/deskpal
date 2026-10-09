@@ -1,6 +1,6 @@
-// 用户身份档案预填脚本（分层档案全量字段 → user/profile.json）
+// 用户身份档案预填脚本（senpai-model 全量字段 → user/profile.json）
 // 用法：node scripts/seed-profile.js <seed.json> [userDataDir]
-//   seed.json    种子文件（含高敏感信息，只放本机 gitignore 目录，严禁入库/上传）
+//   seed.json    种子文件（如 docs/profile-seed.json，含高敏感信息，已在 gitignore 内）
 //   userDataDir  默认 %APPDATA%/deskpal（真实 profile）
 // fill-empty 语义：已有值（含漂移更新过的）一律保留，只补空缺；重复运行安全。
 // 注意：deskpal 运行中时其内存缓存会在下次写盘时覆盖外部修改——脚本检测到进程会拒绝执行。

@@ -41,6 +41,18 @@ export function renderMD(raw) {
       return escapeHtml(m.tex);
     }
   });
+  // 链接 href 清洗（20261002 事故）：GFM 自动链接会把紧跟 URL 的全角标点/中文粘进
+  // href（实测「…/tree/main，允许你调用搜索功能阅读。」→ 整句中文被百分号编码进 URL
+  // 路径 → 点击 404）。处理：解码后若尾部是「纯非 ASCII 连续段」（粘连特征）则截掉，
+  // 尾部还含 ASCII 路径字符（如 site/中文/page 的 /page）说明是合法 CJK 路径，不动。
+  html = html.replace(/href="([^"]*)"/g, (whole, href) => {
+    let decoded;
+    try { decoded = decodeURIComponent(href); } catch (_) { return whole; }
+    const cut = decoded.match(/^[\x21-\x7e]+/);
+    if (!cut || cut[0] === decoded) return whole;
+    if (!/^[\s\u0080-\uffff]*$/.test(decoded.slice(cut[0].length))) return whole;
+    return `href="${encodeURI(cut[0])}"`;
+  });
   return html;
 }
 

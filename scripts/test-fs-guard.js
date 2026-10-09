@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 process.env.DESKPAL_TEST = '1';
-const guard = require('fs').realpathSync(__dirname + '/..').split(/[\\/]/).pop().startsWith('deskpal')
+const guard = require('fs').realpathSync(__dirname + '/..').endsWith('deskpal')
   ? require(path.join(__dirname, '..', 'src', 'main', 'services', 'fs-guard.js'))
   : null;
 if (!guard) { console.error('FAIL: 无法加载 fs-guard'); process.exit(1); }

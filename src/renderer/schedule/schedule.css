@@ -28,6 +28,7 @@
 .rem-chip.pending { color: var(--dp-accent); border-color: var(--dp-accent); }
 .rem-chip.fired { color: var(--dp-ok); }
 .rem-chip.cancelled, .rem-chip.missed { opacity: .5; }
+.badge.repeat { color: #8e6fd8; border-color: #8e6fd866; }
 
 .ev-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; padding: 4px 2px; }
 .ev-form .full { grid-column: 1 / -1; }

@@ -47,9 +47,9 @@ app.whenReady().then(() => {
       store.set('settings', { agent: { webSearch: { enabled: true, autonomousDailyLimit: 100, cooldownMin: 10, blockedTopics: [] } } });
       const userProfile = require('../src/main/services/user-profile');
       userProfile.saveDoc({
-        P0: '示例用户：年龄段/地区/职业底色（验收用种子数据，可删）',
-        P1: { 相处偏好: '先给结论再讲原理（验收用种子数据，可删）' },
-        P2: { 当前项目: 'deskpal 验收' },
+        P0: '某城市，90后，上班族（验收用种子数据，可删）',
+        P1: { 相处偏好: '先结论后原理；不喜欢空洞夸奖' },
+        P2: { 当前项目: 'deskpal 0.4.0-dev 开发版验收' },
         P3: {},
       });
       console.log('联网场景种子：search.source=stub + webSearch.enabled=true + 档案种子已写入');

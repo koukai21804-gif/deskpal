@@ -10,7 +10,7 @@ const windows = require('../../windows');
 async function generate(range) {
   const reqId = llm.newReqId('report');
   const s = statsMod.stats(range);
-  const pet = store.get('persona').pet;
+  const pet = canon.view().pet;
   // 精简 JSON 喂给 LLM
   const feed = {
     range: range === 'week' ? '本周（近7天）' : '今日',
@@ -22,8 +22,7 @@ async function generate(range) {
   (async () => {
     const win = windows.getWindow('time');
     try {
-      const personaData = store.get('persona');
-      const master = (personaData.user && String(personaData.user.name || '').trim()) || '主人';
+      const master = canon.view().user.name || '主人';
       const raw = await llm.streamChat({
         messages: [{ role: 'system', content: prompts.timeReportPrompt(pet, master, JSON.stringify(feed, null, 1)) }],
         reqId,

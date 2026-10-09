@@ -4,7 +4,7 @@ const llm = require('../llm');
 const prompts = require('../prompts');
 const { rescueJSON } = require('../json-utils');
 const logger = require('../../logger');
-const { materializeReminders, newEvent } = require('./scheduler');
+const { materializeReminders, newEvent, advanceRepeating, REPEATS } = require('./scheduler');
 
 // 解析结果：{understood, draft?, question?}
 async function parseNL(text) {
@@ -27,9 +27,11 @@ async function parseNL(text) {
   // 本地校验
   const start = dayjs(out.start, 'YYYY-MM-DD HH:mm', true);
   const deadline = out.deadline ? dayjs(out.deadline, 'YYYY-MM-DD HH:mm', true) : null;
+  const repeat = REPEATS.includes(out.repeat) && out.repeat !== 'none' ? out.repeat : 'none';
   const errors = [];
   if (!start.isValid() && !deadline) errors.push('开始/截止时间无法解析');
-  if (start.isValid() && start.isBefore(dayjs().subtract(1, 'minute'))) errors.push('时间已经过去了');
+  // 重复日程允许今天的时刻已过（顺延机制会滚到下一次），只拦真正过去的单次日程
+  if (start.isValid() && repeat === 'none' && start.isBefore(dayjs().subtract(1, 'minute'))) errors.push('时间已经过去了');
   if (start.isValid() && start.isAfter(dayjs().add(1, 'year'))) errors.push('时间超过一年后，先不安排啦');
   if (deadline && deadline.isBefore(dayjs().subtract(1, 'minute'))) errors.push('截止时间已经过去');
   if (out.durationMin != null && (!(+out.durationMin > 0) || +out.durationMin > 1440)) out.durationMin = null;
@@ -45,10 +47,13 @@ async function parseNL(text) {
     remindPreset: ['event', 'start', 'deadline', 'none'].includes(out.remindPreset)
       ? out.remindPreset
       : (out.kind === 'task' ? (deadline ? 'deadline' : start.isValid() ? 'start' : 'none') : 'event'),
+    repeat,
     notes: '',
     source: 'nl',
   });
   materializeReminders(draft);
+  // 重复日程首物化即全过期（如 14 点说「每天9点提醒我」）→ 确认卡上直接展示顺延后的下次发生
+  advanceRepeating(draft);
   return { understood: true, draft, question: null };
 }
 

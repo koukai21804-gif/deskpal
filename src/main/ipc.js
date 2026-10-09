@@ -19,6 +19,7 @@ const scheduleParser = require('./services/schedule/parser');
 const scheduleExcel = require('./services/schedule/excel');
 const memory = require('./services/memory');
 const userProfile = require('./services/user-profile');
+const canon = require('./services/canon');
 const searchLedger = require('./services/agent/search-ledger');
 const netSearch = require('./services/agent/net-search');
 
@@ -150,12 +151,45 @@ function registerIpc() {
       const s = store.get('search');
       return { ...s, searchKeyEnc: undefined, hasKey: !!s.searchKeyEnc }; // R4：密文不进渲染层
     }
+    if (name === 'persona') return canon.view(); // 渲染层吃 v0.3 扁平形状；分层原文走 canon:get
     return store.get(name);
   });
   handle('store:set', ({ name, patch }) => {
+    if (name === 'persona') {
+      canon.sanitizePersonaPatch(patch); // 锁层闸：canon/pet 字段拒收，canon 走批准通道
+      if (patch && patch.ops) canon.noteOpsChange(); // R5：ops 编辑态节流快照
+    }
     const merged = store.set(name, patch);
     windows.broadcastAll('settings:changed', { name });
     return merged;
+  });
+  // ---------- 人格宪法（canon 锁层：读取 / 批准变更 / 签署 / ops 快照，provenance 留痕） ----------
+  handle('canon:get', () => ({ persona: canon.get(), status: canon.status() }));
+  handle('canon:update', ({ changes, reason }) => {
+    const r = canon.update(changes, reason);
+    windows.broadcastAll('settings:changed', { name: 'persona' });
+    return r;
+  });
+  // 签署批准（risk note R2）：唯一能写 seal.status=approved 的通道，语义=前辈批准当前已封存内容
+  handle('canon:approve', () => {
+    const r = canon.approve();
+    windows.broadcastAll('settings:changed', { name: 'persona' });
+    return r;
+  });
+  // 重新配置保护（Q1 恢复仪式）：密钥恢复后重签 / 密钥彻底丢失后显式作废旧签名。系统永不自动调用。
+  // R12a 收编闸：存在未签名修订时必须 ack=true（渲染层已逐条展示 diff 并获前辈确认）。
+  handle('canon:pending-amendments', () => canon.pendingAmendments());
+  handle('canon:reprovision', ({ reason, ack }) => {
+    const r = canon.reprovision(reason, ack === true);
+    windows.broadcastAll('settings:changed', { name: 'persona' });
+    return r;
+  });
+  // ops 快照（risk note R5）：列出 / 恢复（误清空 ops 后的兜底）
+  handle('canon:ops-history', () => canon.listOpsSnapshots());
+  handle('canon:ops-restore', ({ index }) => {
+    const r = canon.restoreOps(index);
+    windows.broadcastAll('settings:changed', { name: 'persona' });
+    return r;
   });
   handle('theme:get', () => themeSvc.current());
   handle('theme:set', (patch) => { themeSvc.set(patch); return themeSvc.current(); });
@@ -210,6 +244,7 @@ function registerIpc() {
       if (memory.isMemoryCommand(text)) return { memoryCommand: true };
       if (userProfile.isProfileCommand(text)) return { profileCommand: true };
       if (searchLedger.isLedgerCommand(text)) return { ledgerCommand: true };
+      if (require('./services/prompts').isDisciplineCommand(text)) return { disciplineCommand: true };
     }
     chat.bumpUserCount(tab);
     return chat.send(tab, String(text).trim());
@@ -224,17 +259,34 @@ function registerIpc() {
   handle('chat:save-history', ({ tab, messages }) => { chat.saveHistory(tab, messages || []); return { ok: true }; });
   handle('chat:export', ({ tab }) => chat.exportChat(tab));
 
+  // ---------- 多会话（v0.5：主对话=角色扮演常驻；专项会话=特定任务/场景） ----------
+  // 切换/新建前主进程先固化旧会话的未提取记忆与档案漂移（flushMemory + tick，作用于旧 active）
+  handle('chat:sessions', () => chat.listSessions());
+  handle('chat:session-new', async (opts) => chat.newSession(opts || {}));
+  handle('chat:session-switch', async ({ id }) => chat.switchSession(String(id || '')));
+  handle('chat:session-rename', ({ id, name, goal }) => chat.renameSession(String(id || ''), { name, goal }));
+  handle('chat:session-delete', ({ id }) => chat.deleteSession(String(id || '')));
+
   // ---------- 长期记忆管理（/deep memory forcing 面板；角色无感知，不入聊天历史） ----------
   // 列出前先强制补提取（有未提取消息时）：「打开面板检查」这个动作本身就收掉会话尾部缺口
   handle('memory:list', async () => { await chat.flushMemory(); return memory.listMemories(); });
   handle('memory:add', (payload) => memory.addMemory(payload));
   handle('memory:delete', ({ id }) => memory.deleteMemory(id));
+  handle('memory:set-scope', ({ id, scope }) => memory.setScope(String(id || ''), String(scope || '')));
+  handle('memory:core-usage', () => memory.coreUsage());
+  handle('memory:archive-list', () => memory.listArchive());
+  handle('memory:archive-restore', ({ id }) => memory.restoreArchive(String(id || '')));
 
   // ---------- 用户身份档案（开发版 /user profile 面板；角色无感知） ----------
   // 打开面板 = 强制补漂移一次（≥2 条新消息才跑，空转不烧调用），与记忆面板同款节奏
   handle('profile:get', async () => { await userProfile.tick(true).catch(() => {}); return userProfile.get(); });
   handle('profile:save', ({ doc }) => userProfile.saveDoc(doc || {}));
   handle('profile:revert', ({ id }) => userProfile.revert(String(id || '')));
+  handle('profile:archive-list', () => userProfile.listArchive());
+  handle('profile:archive-restore', ({ index }) => userProfile.restoreArchive(index));
+
+  // ---------- 记忆整理纪律（/discipline 查看面板；只读静态数据，角色无感知） ----------
+  handle('discipline:view', () => require('./services/prompts').MEMORY_DISCIPLINE);
   // 预填导入（面板选择种子 JSON 文件；fill-empty 合并，已有值一律保留）。
   // 文件由主进程读取（渲染层 fetch file:// 被 Chromium 拦截），读前过 fs-guard 敏感路径校验。
   const fsGuard = require('./services/fs-guard');

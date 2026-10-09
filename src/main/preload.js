@@ -8,6 +8,7 @@ const PUSH_CHANNELS = [
   'llm:chunk', 'llm:done', 'llm:error',
   'agent:step', 'agent:permission', 'agent:artifact', 'agent:done',
   'search:ledger-changed',
+  'canon:incident',
   'reader:progress', 'reader:qa-chunk', 'reader:qa-done',
   'report:chunk', 'report:done',
   'schedule:remind', 'schedule:catchup', 'schedule:changed', 'schedule:prefill',
@@ -45,6 +46,12 @@ contextBridge.exposeInMainWorld('deskpal', {
   // 配置
   storeGet: (name) => invoke('store:get', { name }),
   storeSet: (name, patch) => invoke('store:set', { name, patch }),
+  canonGet: () => invoke('canon:get', {}),
+  canonUpdate: (changes, reason) => invoke('canon:update', { changes, reason }),
+  canonApprove: () => invoke('canon:approve', {}),
+  canonReprovision: (reason, ack = false) => invoke('canon:reprovision', { reason, ack }),
+  canonOpsHistory: () => invoke('canon:ops-history', {}),
+  canonOpsRestore: (index) => invoke('canon:ops-restore', { index }),
   themeGet: () => invoke('theme:get', {}),
   themeSet: (patch) => invoke('theme:set', patch),
   themePresets: () => invoke('theme:presets', {}),
@@ -68,16 +75,32 @@ contextBridge.exposeInMainWorld('deskpal', {
   chatSaveHistory: (tab, messages) => invoke('chat:save-history', { tab, messages }),
   chatExport: (tab) => invoke('chat:export', { tab }),
 
+  // 多会话（v0.5）：主对话 + 专项会话
+  chatSessions: () => invoke('chat:sessions', {}),
+  chatSessionNew: (opts) => invoke('chat:session-new', opts || {}),
+  chatSessionSwitch: (id) => invoke('chat:session-switch', { id }),
+  chatSessionRename: (opts) => invoke('chat:session-rename', opts),
+  chatSessionDelete: (id) => invoke('chat:session-delete', { id }),
+
   // 长期记忆管理（/deep memory forcing 面板；不入聊天历史）
   memoryList: () => invoke('memory:list', {}),
   memoryAdd: (item) => invoke('memory:add', item),
   memoryDelete: (id) => invoke('memory:delete', { id }),
+  memorySetScope: (id, scope) => invoke('memory:set-scope', { id, scope }),
+  memoryCoreUsage: () => invoke('memory:core-usage', {}),
+  memoryArchiveList: () => invoke('memory:archive-list', {}),
+  memoryArchiveRestore: (id) => invoke('memory:archive-restore', { id }),
 
   // 用户身份档案（开发版 /user profile 面板）
   profileGet: () => invoke('profile:get', {}),
   profileSave: (doc) => invoke('profile:save', { doc }),
   profileRevert: (id) => invoke('profile:revert', { id }),
   profileSeed: (path) => invoke('profile:seed-file', { path }),
+  profileArchiveList: () => invoke('profile:archive-list', {}),
+  profileArchiveRestore: (index) => invoke('profile:archive-restore', { index }),
+
+  // 记忆整理纪律（/discipline 查看面板；只读）
+  disciplineView: () => invoke('discipline:view', {}),
 
   // 联网搜索（开发版：账本面板 + 设置页供应商配置）
   searchLedger: (range, track) => invoke('search:ledger', { range, track }),

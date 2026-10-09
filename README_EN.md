@@ -87,4 +87,6 @@ Electron 31 · vanilla JS (no frontend framework) · koffi (FFI window tracking)
 
 ## 📄 License
 
-[MIT](./LICENSE). The built-in character artwork (Titor Noreiji) is AI-generated and distributed with the project for personal use; please also follow the terms of your LLM provider.
+- Source code: [MIT](./LICENSE)
+- The built-in character artwork of "Titor Noreiji" (sprites, background, default profile, app icons): Copyright (c) 2026 the deskpal author, registered as an artwork of visual art, and **NOT covered by the MIT license**. It is distributed with this project for personal, non-commercial use; standalone redistribution, commercial use and derivative works require prior permission — see the [Character Artwork License](./ART-LICENSE.md)
+- Please also follow the terms of your LLM provider

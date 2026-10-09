@@ -333,7 +333,7 @@ app.whenReady().then(async () => {
       section('T10 用户身份档案漂移（真实 LLM）');
       const userProfile = require(path.join(__dirname, '..', 'src/main/services/user-profile'));
       try {
-        userProfile.saveDoc({ P0: '示例用户，某市', P2: { 当前项目: 'deskpal 桌宠应用' } });
+        userProfile.saveDoc({ P0: '男，30，苏州', P2: { 当前项目: 'deskpal v0.3.7 桌宠应用' } });
         store.replace('chats/roleplay', {
           messages: [
             { role: 'user', content: '跟你说个事：deskpal 0.4.0 开发版做完了，加了联网搜索和身份档案两个功能。', at: new Date().toISOString() },
@@ -350,7 +350,7 @@ app.whenReady().then(async () => {
           ok(/0\.4\.0|0\.4/.test(d.P2['当前项目'] || ''), `P2.当前项目 已更新为新值（${d.P2['当前项目']}）`);
           ok(!!p2Entry.quote, '变更日志含用户原话依据');
           await userProfile.revert(p2Entry.id);
-          ok(userProfile.get().P2['当前项目'] === 'deskpal 桌宠应用', '回滚恢复旧值');
+          ok(userProfile.get().P2['当前项目'] === 'deskpal v0.3.7 桌宠应用', '回滚恢复旧值');
         } else {
           warn('真实 LLM 本轮未提取出变更（提取器宁缺毋滥属正常波动；落档/回滚机制已由离线套件 54 用例覆盖）');
         }
@@ -386,7 +386,7 @@ app.whenReady().then(async () => {
       };
       try {
         const reportPath = path.join(tempDir, 't11-report.md');
-        const recA = await runChained('chat_real_t11a', `帮我搜一下杭州有什么特产，挑两条要点写进 ${reportPath}，写完告诉我`);
+        const recA = await runChained('chat_real_t11a', `帮我搜一下苏州有什么特产，挑两条要点写进 ${reportPath}，写完告诉我`);
         ok(recA && recA.status === 'done', `T11-a 任务轮完成（实际 ${recA && recA.status}）`);
         ok(recA && recA.steps.some(s => s.kind === 'tool' && s.tool === 'web_search' && s.ok !== false), 'T11-a 真实执行了 web_search');
         await sleep(1500);

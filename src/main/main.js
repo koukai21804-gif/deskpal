@@ -1,5 +1,5 @@
 // 入口：单实例锁 / 托盘 / 窗口 / 生命周期 / 服务启动
-const { app, Tray, Menu, nativeImage } = require('electron');
+const { app, Tray, Menu, nativeImage, dialog } = require('electron');
 const path = require('path');
 const logger = require('./logger');
 const store = require('./services/store');
@@ -31,6 +31,21 @@ if (!gotLock) {
     logger.init(path.join(dataDir, 'logs'));
     logger.info('deskpal 启动 ' + app.getVersion() + ' dataDir=' + dataDir);
     store.init(dataDir);
+    // 人格宪法引擎：persona v1→v2 分层迁移 + canon 封存校验（须在任意 persona 读取前执行）。
+    // 篡改事故（risk note R3）：除了日志与留痕，必须肉眼可见——启动弹窗 + 全窗口推送。
+    try {
+      const { incident } = require('./services/canon').init();
+      if (incident) {
+        windows.broadcastAll('canon:incident', incident);
+        dialog.showMessageBox({
+          type: 'warning',
+          title: 'deskpal · 人格宪法锁层告警',
+          message: '检测到人格宪法（canon）被未经批准通道的修改，已自动恢复',
+          detail: incident.note,
+          buttons: ['我知道了'],
+        });
+      }
+    } catch (e) { logger.error(e); }
 
     registerIpc();
     createTray();

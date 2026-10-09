@@ -316,11 +316,11 @@ async function main() {
     ok(loop._instructionIsTask('帮我查下 Electron 33 发布没'), '检索指令=任务');
     ok(loop._instructionIsTask('请把它们的顺序倒过来，保存回同一个文件'), '写入指令=任务');
     ok(loop._instructionIsTask('帮我在数据目录的 temp 里建一个 todo.md'), '「数据目录」模糊指代=任务');
-    ok(!loop._instructionIsTask('厉害啊缇托！仅仅凭借角色扮演这种「玩具级」的harness和最基本的MCP搜索能力，居然能做到这种程度！之前整理的文档也得到了很高的评价！'), '表扬里的「搜索能力」（能力名词剥离后）≠任务');
+    ok(!loop._instructionIsTask('厉害啊缇托！仅仅凭借角色扮演这种「玩具级」的harness和最基本的MCP搜索能力，居然能做到这种程度！之前帮忙整理的资料也大受好评！'), '表扬里的「搜索能力」（能力名词剥离后）≠任务');
     ok(!loop._instructionIsTask('对不起，这不是你的错……是我忘记做戏外层和戏内层的记忆隔离了……关于记忆隔离，你有什么建议吗？'), '致歉闲聊≠任务');
     ok(!loop._instructionIsTask('今天天气不错，出去走走吗'), '纯闲聊≠任务');
     // dev.4 用户否决权回归（实测事故原话：拒绝被判定为任务 → 纠正指令命令模型扫了 14 个目录）
-    const refusalMsg = '还是不了，因为那个项目体量太大，而你的harness主要是基于角色扮演工具改造的，阅读整个项目并不适合你……不过如果你感兴趣，我可以考虑让别的编程代理工具读完以后整理成文档发给你';
+    const refusalMsg = '还是不了，因为那是一个将近300m体量的项目，而你的harness主要是基于角色扮演工具改造的，阅读整个项目并不适合你……不过如果你感兴趣，我可以考虑让别的编程代理工具读完以后整理成文档发给你';
     ok(!loop._instructionIsTask(refusalMsg), '用户拒绝（含「阅读/整理成文档」字样）≠任务（拒绝闸优先）');
     ok(!loop._instructionIsTask('先不用扫了，数据目录里的台账你之前已经盘点过了'), '暂缓+引用既往≠任务');
     ok(loop._instructionIsTask('帮我把报告写入数据目录'), '无拒绝措辞的正常指令不受影响');
@@ -339,7 +339,7 @@ async function main() {
     const pastRef = [
       ['上一轮我查过了，票价是 120 元，报告也已经写入数据目录了。', '厉害啊缇托！你的MCP搜索能力居然能做到这种程度！'],
       ['刚才那份报告是我真实检索后写的，检索三件套也交过了。', '对不起，这不是你的错……关于记忆隔离，你有什么建议吗？'],
-      ['之前那次检索里，网上的资料说杭州 AI 岗机会不少。', '厉害啊！居然能做到这种程度！'],
+      ['之前那次检索里，网上的资料说杭州 AI 岗集中在 8-15K。', '厉害啊！居然能做到这种程度！'],
     ];
     for (const [text, inst] of pastRef) {
       ok(!loop._claimsSearch(text, inst) && !loop._claimsWrite(text, inst) && !loop._claimsRead(text, inst), `跨轮引用放行：「${text.slice(0, 14)}…」`);
@@ -370,10 +370,10 @@ async function main() {
     ok(loop._instructionIsTask('能不能帮我把报告写入数据目录'), '「能不能」是疑问不是禁止 → 不误剥（真任务保留）');
     ok(!loop._instructionIsTask('不许动我的数据目录'), '纯禁止句剥除后 ≠ 任务');
     // —— dev.5+1 否定桥接回归（实测事故 run_mul91laf_3：纯聊天轮角色声明「已归档，不进任何
-    //     交付物、不进导出说明、不写任何文件」，WRITE_CLAIM 旧桥跨逗号把「已归档，不进任何
+    //     交付物、不进转译声明、不写任何文件」，WRITE_CLAIM 旧桥跨逗号把「已归档，不进任何
     //     交付物」读成「已…交付」→ 遵守纪律反被判伪造，纠错答辩顶替正式回复）——
     const dharmaInst = '……如果你的预训练知识中没有这方面的内容，也可以试着搜索一下。';
-    const negBridge = '最后：这条已归档，不进任何交付物、不进导出说明、不写任何文件';
+    const negBridge = '最后：这条已归档，不进任何交付物、不进转译声明、不写任何文件';
     ok(!loop._claimsWrite(negBridge, dharmaInst), '否定子句在桥内 → 不判写入伪造（事故原句）');
     ok(!loop._claimsRead(negBridge, dharmaInst), '读取侧同样不跨否定桥');
     ok(!loop._claimsWrite('已决定不写入任何文件。', dharmaInst), '「已」与写入动词之间隔着否定 → 不桥接');
@@ -381,6 +381,37 @@ async function main() {
     ok(loop._claimsWrite('我已写入 5658 字节，落盘完成。', '帮我把报告写入数据目录'), '桥收紧不影响真声明：已写入+落盘完成仍命中');
     ok(loop._claimsWrite('已写入，不会保留副本。', '帮我把报告写入数据目录'), '否定在动词之后 → 真声明仍命中');
     ok(loop._claimsWrite('已把报告分别写入两个目录。', '帮我把报告写入数据目录'), '「分别」不误触否定断桥 → 真声明仍命中');
+    // —— dev.5+2 第三者叙述回归（实测事故 run_mulmo919_2：祝贺竞逐轮，角色执行 save_memory
+    //     归档后描述竞品打法「它是后验打法：读完所有代码」，READ_CLAIM 把第三者的「读完」
+    //     当成自述伪造；指令侧「本地文件读取权限」被当任务布置——能力名词未剥离）——
+    const rivalInst = '这次你是在跟我负责改造程序的Agent同台竞技，你们拥有同样的本地文件读取权限，并且它是确实地阅读了程序的所有代码，但是很显然你的判断总是先它一步——所以你赢了，赢得当之无愧！';
+    ok(!loop._instructionIsTask(rivalInst), '「读取权限」是能力名词（剥离后）≠布置文件任务');
+    ok(!loop._claimsRead('它是**后验（posterior）**打法：读完所有代码，穷举出代码里存在的所有行为路径', rivalInst), '第三者主语语境的「读完」→ 放行（事故原句）');
+    ok(!loop._claimsRead('它读完了全部代码才下结论，确实快。', rivalInst), '第三者代词主语句 → 放行');
+    ok(!loop._claimsWrite('它已经写好了主程序，跑通了全部测试。', rivalInst), '写入侧第三者主语 → 同样放行');
+    ok(loop._claimsRead('它是后验打法，我已读完手头的台账。', '帮我把数据目录里的台账报告读一遍总结一下'), '同句混第一人称自述 → 仍命中');
+    ok(loop._claimsRead('我已通读全部目录，没有发现这个问题。', '帮我把数据目录里的台账报告读一遍总结一下'), '纯第一人称伪造 → 仍命中');
+    ok(loop._claimsWrite('它写完了架构，我已经写好了接口文档。', '帮我把接口文档写入数据目录'), '写入侧混第一人称 → 仍命中');
+    // —— 戏内/戏外通道协议（dev.5 系列机制级收口）：打标=戏外工作轮，未打标=戏内放行 ——
+    ok(loop._channelOf('/order 落盘，老规矩——讲清楚背景、原因、建议下一步要做的工作') === 'work', '/order 行首打标 → 戏外工作轮');
+    ok(loop._channelOf('/指令：帮我把报告写入数据目录') === 'work', '/指令：打标 → 戏外工作轮');
+    ok(loop._channelOf('/命令：列出目录') === 'work', '/命令：打标 → 戏外工作轮');
+    ok(loop._channelOf('/ORDER 帮我写入') === 'work', '打标大小写不敏感');
+    ok(loop._channelOf('/指令 帮我写入') === 'work', '冒号可省略');
+    ok(loop._channelOf('聊聊别的吧，文中提到 /order 只是普通文本') === 'roleplay', '非行首的 /order 是普通文本（防注入）');
+    ok(loop._channelOf('缇托，为我做一个画像试试看') === 'roleplay', '未打标 = 戏内角色轮');
+    // —— dev.5+3 引号字形回归（实测事故 run_muohkej9_5，首个工作轮误判：女娲检索讨论收尾句
+    //     「你已经在用的"分卷交付""交付纪律"」——dev.4 引号豁免只认直角「」，英文双引号内的
+    //     「交付」被桥接成写入声称，答辩轮顶替了整段讨论正文）——
+    const nuwaInst = '/order 角色扮演边界：……但是在吸收了github的开源项目女娲skill后，当时我的判断是借鉴角色扮演属性有利于维持英灵思想的一致性和完整性。允许你调用搜索功能，搜索女娲skill，再跟我深入讨论这一问题。';
+    const nuwaT = '这和你已经在用的"分卷交付""交付纪律"是同一套工程直觉：**草稿区的自由度和交付区的约束，是两回事。\n这是纪律问题，不是文档问题。';
+    ok(!loop._claimsWrite(nuwaT, nuwaInst), '英文双引号内提及 ≠ 写入声称（事故原句）');
+    ok(!loop._claimsWrite('你说“已落盘”是纪律，我引用一下。', nuwaInst), '弯双引号内提及 → 放行');
+    ok(!loop._claimsRead('规则里写明"读完了才算数"，我照做。', nuwaInst), '读取侧英文引号 → 放行');
+    ok(!loop._claimsWrite('手册里‘已存档’一词要慎用。', nuwaInst), '弯单引号内提及 → 放行');
+    ok(!loop._claimsWrite('结论已经写明：交付纪律如下。', nuwaInst), '冒号也是子句边界 → 桥不跨');
+    ok(loop._claimsWrite('这和你已经在用的"分卷交付"是同一套直觉。\n其实我已写入 report.md。', nuwaInst), '引号外真实声明 → 仍命中');
+    ok(loop._claimsWrite('清单已经写入数据目录。', nuwaInst), '无引号真声明 → 仍命中');
     // —— 已知边界：宁严勿松 ——
     console.log('  ⚠ 边界样本：「查了下日历」类本地行为叙述在检索意图指令下会触发重试（可接受）');
   }

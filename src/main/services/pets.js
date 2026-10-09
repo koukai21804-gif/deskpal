@@ -1,10 +1,13 @@
 // 宠物设定档案：人设 + 形象差分图 + 缩放绑定为一个完整设定。
 // 支持保存多套 / 应用切换 / 删除 / 导出 .pet.json（图片 base64 内嵌）/ 从文件导入。
+// v0.4.0-dev.5 起档案内 persona 为 canon/ops/user 三层结构（canon.js 归一化）：
+//   保存=快照当前分层；应用=归一化后整体切换 + canon 重新封存（留痕）；导入=兼容 v1 单层与 v2 分层。
 const fs = require('fs');
 const path = require('path');
 const dayjs = require('dayjs');
 const { dialog } = require('electron');
 const store = require('./store');
+const canon = require('./canon');
 const windows = require('../windows');
 
 const EMOTION_KEYS = ['normal', 'happy', 'surprised', 'angry', 'thinking', 'sad'];
@@ -20,7 +23,8 @@ function list() {
   return (d.profiles || []).map(p => ({
     id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt,
     hasImage: Object.values((p.sprites && p.sprites.slots) || {}).some(s => s.mode === 'image'),
-    petName: p.persona && p.persona.pet && p.persona.pet.name || '',
+    petName: p.persona && (canon.view(p.persona).pet.name || ''),
+    layered: !!(p.persona && p.persona.canon),
   }));
 }
 
@@ -30,11 +34,11 @@ function findProfile(id) {
   return p;
 }
 
-// 保存当前设定（同名覆盖更新）
+// 保存当前设定（同名覆盖更新）。persona 快照取分层归一化结果，档案自带完整宪法。
 function save(name) {
   name = String(name || '').trim().slice(0, 20) || ('设定 ' + dayjs().format('MM-DD HH:mm'));
   const snapshot = {
-    persona: clone(store.get('persona')),
+    persona: canon.normalizePersona(store.get('persona')),
     sprites: clone(store.get('sprites')),
     petScale: store.get('settings').pet.scale || 1,
   };
@@ -46,10 +50,13 @@ function save(name) {
   return list();
 }
 
-// 应用档案：切换人设 + 形象 + 缩放（深拷贝，与档案解耦）
+// 应用档案：切换人设 + 形象 + 缩放（深拷贝，与档案解耦）。
+// persona 先归一化（老档案是 v1 单层结构）→ 整体替换 → canon 按新宪法重新封存留痕。
 function apply(id) {
   const p = findProfile(id);
-  store.replace('persona', clone(p.persona));
+  const layered = canon.normalizePersona(p.persona);
+  store.replace('persona', layered);
+  canon.reseal({ source: 'profile-apply', note: `应用角色档案「${p.name}」，canon 随档案切换并重新封存` });
   store.replace('sprites', clone(p.sprites));
   if (p.petScale) store.set('settings', { pet: { scale: p.petScale } });
   store.flushAll(); // 立即落盘
@@ -66,13 +73,13 @@ function del(id) {
   return list();
 }
 
-// 导出为 .pet.json（图片转 base64 内嵌，可分享）
+// 导出为 .pet.json（图片转 base64 内嵌，可分享）。v2：persona 为分层结构（v1 单层文件仍可导入）。
 async function exportProfile(id) {
   const p = findProfile(id);
   const payload = {
-    app: 'deskpal', type: 'pet-profile', version: 1,
+    app: 'deskpal', type: 'pet-profile', version: 2,
     name: p.name, exportedAt: dayjs().format(),
-    persona: p.persona, petScale: p.petScale || 1,
+    persona: canon.normalizePersona(p.persona), petScale: p.petScale || 1,
     sprites: { slots: {} },
   };
   for (const k of EMOTION_KEYS) {
@@ -109,8 +116,25 @@ async function importProfile(filePath) {
   let j;
   try { j = JSON.parse(fs.readFileSync(src, 'utf8')); }
   catch (_) { throw friendlyError('文件不是合法的 JSON'); }
-  if (!j || j.type !== 'pet-profile' || !j.persona || !j.persona.pet) {
-    throw friendlyError('不是有效的 deskpal 宠物设定文件（需要 .pet.json）');
+  const hasPersona = j && j.type === 'pet-profile' && j.persona && (j.persona.canon || j.persona.pet);
+  if (!hasPersona) {
+    throw friendlyError('不是有效的 deskpal 宠物设定文件（需要 .pet.json，v1/v2 均可）');
+  }
+  const layeredPersona = canon.normalizePersona(j.persona); // v1 单层 → 分层；v2 原样归一化
+  // R6（risk note）：v1 单层文件没有宪法概念，canon 由 TITOR-CANON 默认内容兜底——
+  // 这是「该锁的进了哪层」的自动判据，导入前必须让前辈肉眼确认判得对不对。
+  // （纯 Node 测试进程无 electron dialog，跳过确认直接入库，由测试断言判据正确性。）
+  if (!j.persona.canon && dialog && typeof dialog.showMessageBox === 'function') {
+    const { canceled: no } = await dialog.showMessageBox({
+      type: 'question',
+      title: '导入 v1 单层设定',
+      message: `「${String(j.name || '未命名').slice(0, 20)}」是 v1 单层结构文件`,
+      detail: '分层结果预览：\n· canon 宪法（L1–L4）将以 TITOR-CANON v1.0 默认内容兜底，名字沿用旧档\n· ops 表现层（外貌/口头禅/表层性格等）原样保留旧档内容\n· 导入后可在人设页查看，宪法修改走批准通道\n\n确认导入？',
+      buttons: ['确认导入', '取消'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (no) return null;
   }
 
   // 图片数据落盘到 sprites/
@@ -131,7 +155,8 @@ async function importProfile(filePath) {
   let name = String(j.name || '导入的设定').slice(0, 20);
   if ((d.profiles || []).some(x => x.name === name)) name = name + ' (导入)';
   d.profiles.push({
-    id: newId(), name, persona: j.persona, sprites,
+    id: newId(), name, persona: layeredPersona,
+    sprites,
     petScale: j.petScale || 1,
     createdAt: dayjs().format(), updatedAt: dayjs().format(),
   });

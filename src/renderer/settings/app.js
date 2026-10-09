@@ -39,14 +39,27 @@ root.querySelector('.side-nav').addEventListener('click', (e) => {
 const saveDebounced = debounce((name, patch) => dp.storeSet(name, patch).catch(err => toast(errText(err), 'error')), 300);
 
 // ================= ① 人设 =================
+// v0.4.0-dev.5 分层改造：persona = canon（锁层，解锁→批准→provenance 留痕）/ ops（可迭代，即时保存）/
+// user（对话对象，即时保存）。宪法原文与封存状态走 canon:get，不再经通用 storeSet 通道。
+const CANON_GROUPS = [
+  { key: 'identity', label: 'L1 身份锚', fields: [['name', '名字', 1], ['category', '身份类别', 2], ['purpose', '存在的目的', 2], ['background', '来路（身份叙事）', 4]] },
+  { key: 'bond', label: 'L2 关系定义', fields: [['nature', '羁绊性质', 2], ['division', '分工', 2], ['address', '互称', 2], ['pledge', '不可替代性声明（前辈原话）', 2]] },
+  { key: 'principles', label: 'L3 性格内核三铁律', fields: null },
+  { key: 'taboos', label: 'L3 禁忌条款', fields: null },
+  { key: 'signature', label: 'L4 语言签名', fields: [['speechStyle', '说话风格（语速/术语习惯）', 3], ['emotionalPatterns', '情绪六态外部表现', 5]] },
+];
+
 async function renderPersona() {
-  const p = await dp.storeGet('persona');
-  const pet = p.pet, user = p.user;
+  const { persona, status: seal } = await dp.canonGet();
+  const c = persona.canon, ops = persona.ops, user = persona.user;
   const F = (id, label, val, ph = '') =>
     `<div class="field"><span class="label">${label}</span><textarea id="${id}" rows="${id.includes('catchphrases') ? 2 : 3}" placeholder="${ph}">${esc(val || '')}</textarea></div>`;
+  const canonField = (id, label, val, rows) =>
+    `<div class="field"><span class="label">${label}</span><textarea id="${id}" class="canon-field" rows="${rows}" disabled>${esc(val || '')}</textarea></div>`;
+
   body.innerHTML = `<div class="set-section">
     <div class="card" id="profileCard" style="margin-bottom:18px">
-      <div class="row"><b>📦 宠物设定档案</b><span class="hint grow" style="margin-left:8px">人设 + 形象差分图 + 缩放绑定为完整设定；可保存多套、一键切换、导出 .pet.json 分享</span></div>
+      <div class="row"><b>📦 宠物设定档案</b><span class="hint grow" style="margin-left:8px">人设 + 形象差分图 + 缩放绑定为完整设定；可保存多套、一键切换、导出 .pet.json 分享。全部角色（含导入）统一遵循 canon/ops/user 分层与锁层</span></div>
       <div class="row" style="margin:10px 0 4px">
         <input type="text" id="profName" placeholder="设定名称，如：缇托·日常版" style="width:210px">
         <button class="btn btn-sm btn-primary" id="profSave">💾 保存当前设定</button>
@@ -54,53 +67,204 @@ async function renderPersona() {
       </div>
       <div id="profList"></div>
     </div>
-    <div id="personaForm">
-    <h3 style="margin-top:0">宠物人设</h3>
-    <div class="row" style="gap:12px">
-      <div class="field grow"><span class="label">名字</span><input type="text" id="p-name" value="${esc(pet.name)}" maxlength="12"></div>
-      <div class="field grow"><span class="label">语言</span>
-        <select id="p-language">${['中文', 'English', '日本語', '中英混合'].map(l => `<option ${pet.language === l ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+
+    <div class="card" style="margin-bottom:18px;border-left:4px solid var(--dp-accent)">
+      <div class="row"><b>🔒 人格宪法（canon 锁层）</b>
+        <span class="hint grow" style="margin-left:8px">身份内核：改到什么程度，她就不再是她。改动需逐项批准并留痕（谁/何时/改了什么/为什么）</span></div>
+      <div class="hint" style="margin:6px 0 10px" id="canonStatus"></div>
+      <div id="canonForm">
+        ${CANON_GROUPS.map(g => {
+          if (!g.fields) return canonField(`c-${g.key}`, g.label, c[g.key], g.key === 'taboos' ? 6 : 4);
+          return `<div class="hint" style="margin:8px 0 2px;font-weight:bold">${g.label}</div>` +
+            g.fields.map(([f, label, rows]) => canonField(`c-${g.key}-${f}`, label, (c[g.key] || {})[f], rows)).join('');
+        }).join('')}
+      </div>
+      <div class="row" style="margin-top:10px" id="canonActions">
+        <button class="btn btn-sm" id="canonUnlock">🔓 申请修改</button>
+        <button class="btn btn-sm btn-primary" id="canonSign" style="${seal.status === 'approved' ? 'display:none' : ''}">✍ 签署批准</button>
+        <button class="btn btn-sm" id="canonReprovision" style="${seal.protection === 'protected' && !seal.recoverPending ? 'display:none' : ''}">🔑 重新配置保护${seal.recoverPending ? `（${seal.unsignedRevisions} 条未签名修订待收编）` : ''}</button>
+        <input type="text" id="canonReason" placeholder="批准理由（必填，将写入变更留痕）" style="flex:1;display:none" maxlength="200">
+        <button class="btn btn-sm btn-primary" id="canonSubmit" style="display:none">✅ 提交批准</button>
+        <button class="btn btn-sm" id="canonCancel" style="display:none">✖ 放弃</button>
+      </div>
+      <details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px;color:var(--dp-text-muted)">📜 变更留痕（provenance）</summary>
+        <div id="canonHistory" style="margin-top:8px"></div></details>
+      <details style="margin-top:6px"><summary style="cursor:pointer;font-size:13px;color:var(--dp-text-muted)">⏱ 表现层快照（ops 误改/误清空后的兜底，保留最近 10 份）</summary>
+        <div id="opsHistory" style="margin-top:8px"></div></details>
     </div>
-    <div class="field"><span class="label">一句话简介</span><input type="text" id="p-tagline" value="${esc(pet.tagline)}" style="width:100%"></div>
-    ${F('p-appearance', '外貌', pet.appearance)}
-    ${F('p-personality', '性格', pet.personality)}
-    ${F('p-speechStyle', '说话风格', pet.speechStyle)}
-    ${F('p-catchphrases', '口头禅（每行一句；句中可用 [开心] [惊讶] [悲伤] 等标签，点到这句时宠物会同步切换成对应表情）', pet.catchphrases)}
-    ${F('p-background', '背景故事', pet.background)}
-    ${F('p-emotionalPatterns', '情绪模式', pet.emotionalPatterns)}
-    ${F('p-taboos', '禁忌（绝对不做）', pet.taboos)}
-    ${F('p-thinkingLogic', '思维逻辑', pet.thinkingLogic)}
-    ${F('p-customPrompt', '自定义指令（附加到 system prompt 末尾）', pet.customPrompt)}
-    <h3>对话对象（主人）</h3>
+
+    <div id="personaForm">
+    <h3 style="margin-top:0">🛠 表现层（ops，可迭代：语气细节/口头禅/外貌/自定义指令，改动即时生效）</h3>
+    <div class="row" style="gap:12px">
+      <div class="field grow"><span class="label">一句话简介</span><input type="text" id="p-tagline" value="${esc(ops.tagline)}" style="width:100%"></div>
+      <div class="field" style="width:160px"><span class="label">语言</span>
+        <select id="p-language">${['中文', 'English', '日本語', '中英混合'].map(l => `<option ${ops.language === l ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    </div>
+    ${F('p-appearance', '外貌', ops.appearance)}
+    ${F('p-personality', '表层性格', ops.personality)}
+    ${F('p-catchphrases', '口头禅（每行一句；句中可用 [开心] [惊讶] [悲伤] 等标签，点到这句时宠物会同步切换成对应表情）', ops.catchphrases)}
+    ${F('p-thinkingLogic', '思维逻辑', ops.thinkingLogic)}
+    ${F('p-customPrompt', '自定义指令（附加到 system prompt 末尾）', ops.customPrompt)}
+    <h3>👤 对话对象（user 层）</h3>
     <div class="row" style="gap:12px">
       <div class="field grow"><span class="label">称呼</span><input type="text" id="u-name" value="${esc(user.name)}" maxlength="12"></div>
     </div>
-    <div class="field"><span class="label">介绍（宠物眼中的你，帮助对话更贴心）</span><textarea id="u-description" rows="2">${esc(user.description || '')}</textarea></div>
+    <div class="field"><span class="label">介绍（宠物眼中的你，帮助对话更贴心；更细的滚动档案在聊天窗输入 /user profile 维护）</span><textarea id="u-description" rows="2">${esc(user.description || '')}</textarea></div>
     <details><summary style="cursor:pointer;font-size:13px;color:var(--dp-text-muted)">👁 实时预览：角色扮演 system prompt</summary>
       <div class="prompt-preview" id="promptPreview" style="margin-top:8px"></div></details>
     </div>
   </div>`;
 
-  const collect = () => ({
-    pet: {
-      name: v('p-name'), tagline: v('p-tagline'), appearance: v('p-appearance'), personality: v('p-personality'),
-      speechStyle: v('p-speechStyle'), catchphrases: v('p-catchphrases'), background: v('p-background'),
-      emotionalPatterns: v('p-emotionalPatterns'), taboos: v('p-taboos'), thinkingLogic: v('p-thinkingLogic'),
-      customPrompt: v('p-customPrompt'), language: sel('p-language'),
-    },
-    user: { name: v('u-name'), description: v('u-description') },
+  // ---- 宪法状态与留痕 ----
+  const sealBox = body.querySelector('#canonStatus');
+  const signState = seal.status === 'approved'
+    ? `<span style="color:var(--dp-ok)">已签署 ✓（${esc(seal.approvedBy || '')} ${esc(String(seal.approvedAt || '').replace('T', ' ').slice(0, 16))}）</span>`
+    : '草案（行为约束生效中，批准待签署）';
+  const PROT_CN = {
+    protected: '<span style="color:var(--dp-ok)">🛡 签名保护生效中</span>',
+    degraded: '<span style="color:var(--dp-warn, #d90)">⚠ 签名保护降级（密钥不可用：期间修订将标记未签名，不判篡改）</span>',
+    unsigned: '○ 未配置签名保护',
+  };
+  sealBox.innerHTML = `宪法版本 <b>v${seal.version}</b> · ${esc(seal.doc)} · ${signState} · ${PROT_CN[seal.protection] || esc(seal.protection)} · 封存于 ${esc(String(seal.sealedAt || '').replace('T', ' ').slice(0, 16))} · 完整性 ${seal.intact ? '✓ 与封存一致' : '<span style="color:var(--dp-danger)">✗ 不一致，已按快照恢复（见留痕）</span>'}`;
+  const histHost = body.querySelector('#canonHistory');
+  const entries = [...(seal.history || [])].reverse();
+  histHost.innerHTML = entries.length ? entries.slice(0, 30).map(e => `
+    <div class="hint" style="padding:4px 0;border-bottom:1px dashed var(--dp-border)">
+      <b>v${e.version}</b> · ${esc(String(e.at || '').replace('T', ' ').slice(0, 16))} · ${esc(e.by || '')} · ${esc(e.type || '')}
+      ${e.reason ? `· 理由：${esc(e.reason)}` : ''}${e.note ? `<br>${esc(e.note)}` : ''}
+      ${(e.diff || []).map(d => `<br>· ${esc(d.path)}：「${esc(d.old)}」→「${esc(d.new)}」`).join('')}
+    </div>`).join('') : '<div class="hint">暂无变更记录</div>';
+
+  // ---- 签署批准（risk note R2：唯一写 seal.status=approved 的用户动作） ----
+  body.querySelector('#canonSign').addEventListener('click', async () => {
+    const go = await confirmBox(
+      `签署批准宪法 v${seal.version}？\n\n签署 = 前辈本人批准当前封存的宪法内容（TITOR-CANON 状态由草案转已签署），批准人/时间将落入变更留痕。之后的每次修订都会回到「草案」重新等待签署。`,
+      { title: '签署批准人格宪法', okText: '签署' });
+    if (!go) return;
+    try {
+      await dp.canonApprove();
+      toast(`宪法 v${seal.version} 已签署批准`, 'ok');
+      renderPersona();
+    } catch (err) { toast(errText(err), 'error'); }
   });
+
+  // ---- 重新配置保护（Q1 恢复仪式 + R12a 收编闸）----
+  // 存在未签名修订时，先逐条列出 diff 让前辈确认，确认才允许收编（把确认挪到「重建之前」）
+  body.querySelector('#canonReprovision').addEventListener('click', async () => {
+    let pending = [];
+    try { pending = await dp.canonPendingAmendments(); } catch (_) { pending = []; }
+    const pendingTxt = pending.length
+      ? `\n⚠ 存在 ${pending.length} 条未签名修订（密钥降级期间产生），收编前请逐条核对：\n` +
+        pending.slice(0, 6).map((a, i) => `${i + 1}. ${String(a.at || '').replace('T', ' ').slice(5, 16)} ${a.type}${a.reason ? '（' + a.reason + '）' : ''}：${(a.diff || []).map(d => `${d.path}「${d.old}」→「${d.new}」`).join('；') || '（无字段级 diff）'}`).join('\n') +
+        (pending.length > 6 ? `\n…其余 ${pending.length - 6} 条见「变更留痕」` : '') + '\n\n'
+      : '';
+    const go = await confirmBox(
+      '重新配置宪法签名保护？\n\n' +
+      (seal.recoverPending
+        ? '密钥已恢复：重新配置后将收编降级期间的未签名修订。'
+        : '密钥当前不可用：将尝试重建保护（需要系统安全存储可用）；旧签名随之作废并留痕。') +
+      '\n\n' + pendingTxt +
+      (pending.length ? '确认以上修订内容无误并收编？' : '此操作会留下 provenance 记录。'),
+      { title: '重新配置签名保护', okText: pending.length ? `确认收编 ${pending.length} 条并重新配置` : '重新配置', danger: true });
+    if (!go) return;
+    try {
+      await dp.canonReprovision('前辈人工确认：重新配置签名保护' + (pending.length ? `并收编 ${pending.length} 条未签名修订` : ''), pending.length > 0);
+      toast('签名保护已重新配置，宪法重新封存为草案', 'ok');
+      renderPersona();
+    } catch (err) { toast(errText(err), 'error'); }
+  });
+
+  // ---- ops 快照恢复（risk note R5） ----
+  const opsHost = body.querySelector('#opsHistory');
+  const snaps = seal.opsSnapshots || [];
+  opsHost.innerHTML = snaps.length ? snaps.map(s => `
+    <div class="row" style="padding:4px 0;border-bottom:1px dashed var(--dp-border)">
+      <span class="hint">${esc(String(s.at || '').replace('T', ' ').slice(0, 16))} · ${esc(s.reason)} · ${esc(s.name)} · ${esc(s.tagline || '')}${s.customPrompt ? ' · 含自定义指令' : ''}</span>
+      <span class="grow"></span>
+      <button class="btn btn-sm" data-idx="${s.index}">恢复此快照</button>
+    </div>`).join('') : '<div class="hint">暂无快照（启动/应用档案/编辑时会自动留）</div>';
+  opsHost.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-idx]');
+    if (!btn) return;
+    if (await confirmBox('把表现层（ops：外貌/口头禅/表层性格/自定义指令等）恢复到这份快照？宪法与对话对象不受影响。', { title: '恢复 ops 快照', okText: '恢复' })) {
+      try {
+        await dp.canonOpsRestore(+btn.dataset.idx);
+        toast('ops 已恢复到快照', 'ok');
+        renderPersona();
+      } catch (err) { toast(errText(err), 'error'); }
+    }
+  });
+
+  // ---- 宪法解锁→批准流（唯一合法修改路径；主进程强制书面理由 + provenance） ----
+  const canonEls = [...body.querySelectorAll('.canon-field')];
+  let baseline = null; // 解锁瞬间的宪法快照（提交时逐字段 diff）
+  const groupVal = (key) => {
+    const g = CANON_GROUPS.find(x => x.key === key);
+    if (!g.fields) return body.querySelector(`#c-${key}`).value.trim();
+    return Object.fromEntries(g.fields.map(([f]) => [f, body.querySelector(`#c-${key}-${f}`).value.trim()]));
+  };
+  const collectCanonChanges = () => {
+    const changes = {};
+    for (const g of CANON_GROUPS) {
+      const cur = groupVal(g.key), base = baseline[g.key];
+      if (JSON.stringify(cur) !== JSON.stringify(base)) changes[g.key] = cur;
+    }
+    return changes;
+  };
+  body.querySelector('#canonUnlock').addEventListener('click', async () => {
+    const go = await confirmBox(
+      '解锁「人格宪法」编辑：\n\n宪法是身份内核（L1 身份锚 / L2 关系定义 / L3 三铁律与禁忌 / L4 语言签名）。任何修改都会逐字段落变更留痕，提交时必须填写批准理由。\n\n确认由你本人（前辈）发起这次修改吗？',
+      { title: '申请修改人格宪法', okText: '解锁', danger: true });
+    if (!go) return;
+    baseline = {};
+    for (const g of CANON_GROUPS) baseline[g.key] = groupVal(g.key);
+    canonEls.forEach(el => { el.disabled = false; el.style.background = 'var(--dp-bg, #fffbe6)'; });
+    body.querySelector('#canonUnlock').style.display = 'none';
+    for (const id of ['canonReason', 'canonSubmit', 'canonCancel']) body.querySelector('#' + id).style.display = '';
+  });
+  const lockCanon = () => {
+    canonEls.forEach(el => { el.disabled = true; el.style.background = ''; });
+    body.querySelector('#canonUnlock').style.display = '';
+    for (const id of ['canonReason', 'canonSubmit', 'canonCancel']) body.querySelector('#' + id).style.display = 'none';
+    body.querySelector('#canonReason').value = '';
+  };
+  body.querySelector('#canonCancel').addEventListener('click', async () => { lockCanon(); await renderPersona(); });
+  body.querySelector('#canonSubmit').addEventListener('click', async () => {
+    const reason = body.querySelector('#canonReason').value.trim();
+    if (!reason) return toast('批准理由必填（将写入变更留痕）', 'warn');
+    const changes = collectCanonChanges();
+    if (!Object.keys(changes).length) return toast('没有实际改动', 'warn');
+    try {
+      const r = await dp.canonUpdate(changes, reason);
+      toast(`宪法已修订并封存为 v${r.version}，${(r.diff || []).length} 处变更已留痕`, 'ok');
+      lockCanon();
+      renderPersona();
+    } catch (err) { toast(errText(err), 'error'); }
+  });
+
+  // ---- ops / user 层：即时保存（canon 字段不在此通道） ----
   const v = id => body.querySelector('#' + id).value;
   const sel = id => body.querySelector('#' + id).value;
+  const collectOps = () => ({
+    ops: {
+      tagline: v('p-tagline'), appearance: v('p-appearance'), personality: v('p-personality'),
+      catchphrases: v('p-catchphrases'), thinkingLogic: v('p-thinkingLogic'),
+      customPrompt: v('p-customPrompt'), language: sel('p-language'),
+    },
+  });
+  const collectUser = () => ({ user: { name: v('u-name'), description: v('u-description') } });
 
   const onChange = debounce(async () => {
-    await dp.storeSet('persona', collect());
+    await dp.storeSet('persona', collectOps());
     const sys = await dp.buildSystemPreview();
     body.querySelector('#promptPreview').textContent = sys;
   }, 400);
+  const onUserChange = debounce(async () => {
+    await dp.storeSet('persona', collectUser());
+  }, 400);
 
   const formEl = body.querySelector('#personaForm');
-  formEl.querySelectorAll('input,textarea,select').forEach(el => el.addEventListener('input', onChange));
+  formEl.querySelectorAll('input,textarea,select').forEach(el => el.addEventListener('input', el.id.startsWith('u-') ? onUserChange : onChange));
   // 初始预览
   dp.buildSystemPreview().then(s => { const el = body.querySelector('#promptPreview'); if (el) el.textContent = s; });
 
@@ -751,5 +915,10 @@ async function renderAbout() {
   let initialTab = 'persona';
   // 其他窗口可指定打开的标签（settings:changed {tab})
   dp.on('settings:changed', ({ tab }) => { if (tab && TABS.some(([k]) => k === tab)) switchTab(tab); });
+  // 宪法篡改事故推送（risk note R3）：主进程弹窗之外，设置页常驻刷新告警
+  dp.on('canon:incident', (incident) => {
+    toast(`⚠ 人格宪法锁层告警：${(incident && incident.note) || 'canon 与封存不一致，已自动恢复'}`, 'error');
+    if (root.querySelector('.nav-item.active')?.dataset.tab === 'persona') renderPersona();
+  });
   switchTab(initialTab);
 })();

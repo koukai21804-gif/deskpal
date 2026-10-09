@@ -38,15 +38,41 @@ const permissions = require(SVC('agent/permissions'));
 // 每个用例配置一次 LLM 行为脚本（按调用序出牌）
 let llmScript = [];
 let llmCalls = [];
-llm.streamChat = async ({ messages, onChunk, withTools, overrides }) => {
+llm.streamChat = async ({ messages, onChunk, withTools, overrides, onUsage }) => {
   llmCalls.push({ kind: 'stream', withTools, overrides, messages });
   const turn = llmScript.shift() || { content: '（空）', toolCalls: [], finishReason: 'stop' };
+  // 故障注入（P1-8）：__throwOverflow 模拟上游 400 上下文溢出（带 contextOverflow 标记）
+  if (turn.__throwOverflow) {
+    const e = new Error('对话长度超出模型的上下文窗口');
+    e.contextOverflow = true;
+    throw e;
+  }
+  // DeepSeek 思考模式服务端校验（20261002 run_mupxfru8_1 事故回归闸）：
+  // 最后一条 user 之后的 assistant 消息缺失非空 reasoning_content → 400。
+  // 零字节断流轮若被推成空 assistant，这里立即复现真实故障。
+  {
+    let lastUser = -1;
+    messages.forEach((m, i) => { if (m.role === 'user') lastUser = i; });
+    for (let i = lastUser + 1; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.role === 'assistant' && !String(m.reasoning_content || '').trim()) {
+        const e = new Error('接口返回 400：The `reasoning_content` in the thinking mode must be passed back to the API.');
+        e.userMsg = e.message;
+        throw e;
+      }
+    }
+  }
   // 逐小片喂正文（含跨 chunk 半截标记/标签），驱动剥离器状态机
   for (const piece of splitPieces(turn.content || '')) {
     if (onChunk) onChunk(piece, (turn.content || ''));
   }
+  // 用量回传（P0-2 锚点）：turn.usage 模拟上游自报 prompt_tokens
+  if (turn.usage && onUsage) onUsage(turn.usage);
+  // 思考模式全程开启（v0.3.7 用户决策）：真实模型轮必产 reasoning，桩默认补齐；
+  // turn.reasoning === '' 显式表示零字节/无思考轮
+  const reasoning = turn.reasoning !== undefined ? turn.reasoning : '（思考）';
   return withTools
-    ? { content: turn.content || '', toolCalls: turn.toolCalls || [], finishReason: turn.finishReason || (turn.toolCalls && turn.toolCalls.length ? 'tool_calls' : 'stop'), reasoning: turn.reasoning || '', streamCut: !!turn.streamCut }
+    ? { content: turn.content || '', toolCalls: turn.toolCalls || [], finishReason: turn.finishReason || (turn.toolCalls && turn.toolCalls.length ? 'tool_calls' : 'stop'), reasoning, streamCut: !!turn.streamCut, committed: !!turn.committed, ...(turn.streamError ? { streamError: turn.streamError } : {}) }
     : (turn.content || '');
 };
 llm.genericCompletion = async (messages, opts) => {
@@ -100,7 +126,7 @@ section('用例 1：写文件全链路（allow_once）');
 
   let donePayload = null, finalFl = null;
   const p = loop.startRun({
-    reqId: 'chat_e2e_1', instruction: '在 temp 建 todo.md', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_1', instruction: '/order 在 temp 建 todo.md', baseMessages: baseMsgs(),
     onFinal: async (fl) => { finalFl = fl; return { msgId: 'm_e2e_1' }; },
     onDone: (x) => { donePayload = x; },
     onAborted: () => { ok(false, '不应触发 abort'); },
@@ -151,7 +177,7 @@ section('用例 2：连续拒绝与熔断');
 
   let donePayload = null;
   await loop.startRun({
-    reqId: 'chat_e2e_2', instruction: '写 deny.md', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_2', instruction: '/order 写 deny.md', baseMessages: baseMsgs(),
     onFinal: async () => ({}), onDone: (x) => { donePayload = x; }, onAborted: () => {}, onError: (e) => { ok(false, 'deny 路径不应 error: ' + e.message); },
   });
 
@@ -176,7 +202,7 @@ section('用例 3：假完成有界重试');
   llmCalls = [];
   let finalFl = null;
   await loop.startRun({
-    reqId: 'chat_e2e_3', instruction: '整理目录', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_3', instruction: '/order 整理目录', baseMessages: baseMsgs(),
     onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '重试路径不应 error: ' + e.message); },
   });
   const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_3');
@@ -196,7 +222,7 @@ section('用例 4：maxRounds 上限');
   llmCalls = [];
   let donePayload = null;
   await loop.startRun({
-    reqId: 'chat_e2e_4', instruction: '无限工具', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_4', instruction: '/order 无限工具', baseMessages: baseMsgs(),
     onFinal: async () => ({}), onDone: (x) => { donePayload = x; }, onAborted: () => {}, onError: (e) => { ok(false, '上限路径不应 error: ' + e.message); },
   });
   ok(llmCalls.length === 5, `共 5 轮 LLM 调用（4 决策轮 + 1 收尾轮），got ${llmCalls.length}`);
@@ -217,7 +243,7 @@ section('用例 5：epoch 打断');
   permDecision = 'hang'; // 权限卡永不决 → 挂起等待
   let abortedPayload = null, doneCalled = false;
   const p = loop.startRun({
-    reqId: 'chat_e2e_5', instruction: '写入后打断', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_5', instruction: '/order 写入后打断', baseMessages: baseMsgs(),
     onFinal: async () => { ok(false, 'abort 后不应 onFinal'); return {}; },
     onDone: () => { doneCalled = true; },
     onAborted: (x) => { abortedPayload = x; },
@@ -244,7 +270,7 @@ section('用例 6：fs-guard 越界写入');
   permDecision = 'allow_once'; // 即使用户允许，fs-guard 仍拒绝（双保险）
   llmCalls = [];
   await loop.startRun({
-    reqId: 'chat_e2e_6', instruction: '写系统目录', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_6', instruction: '/order 写系统目录', baseMessages: baseMsgs(),
     onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '越界路径不应炸 run: ' + e.message); },
   });
   const toolMsg = llmCalls[1].messages.find(m => m.role === 'tool');
@@ -268,7 +294,7 @@ section('用例 7a：userData 模式——数据目录内直写（无权限卡�
   llmCalls = [];
   let donePayload = null;
   await loop.startRun({
-    reqId: 'chat_e2e_7a', instruction: '建 mode-ud.md', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_7a', instruction: '/order 建 mode-ud.md', baseMessages: baseMsgs(),
     onFinal: async () => ({}), onDone: (x) => { donePayload = x; }, onAborted: () => {}, onError: (e) => { ok(false, '7a 不应 error: ' + e.message); },
   });
   ok(fs.existsSync(target) && fs.readFileSync(target, 'utf8') === 'ud-mode', '数据目录内文件直写成功');
@@ -286,7 +312,7 @@ section('用例 7a：userData 模式——数据目录内直写（无权限卡�
     { content: '不行。[情绪:悲伤]', finishReason: 'stop' },
   ];
   await loop.startRun({
-    reqId: 'chat_e2e_7a2', instruction: '写数据目录外', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_7a2', instruction: '/order 写数据目录外', baseMessages: baseMsgs(),
     onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '7a2 不应 error: ' + e.message); },
   });
   const rec2 = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_7a2');
@@ -307,7 +333,7 @@ section('用例 7b：read 模式——write 工具不下发 + 兜底拦截');
   ];
   llmCalls = [];
   await loop.startRun({
-    reqId: 'chat_e2e_7b', instruction: '写 mode-read.md', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_7b', instruction: '/order 写 mode-read.md', baseMessages: baseMsgs(),
     onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '7b 不应 error: ' + e.message); },
   });
   const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_7b');
@@ -336,7 +362,7 @@ section('用例 8：finishReason=length 截断重试与分段写入');
   permDecision = 'allow_once';
   llmCalls = [];
   await loop.startRun({
-    reqId: 'chat_e2e_8', instruction: '写项目迭代文档', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_8', instruction: '/order 写项目迭代文档', baseMessages: baseMsgs(),
     onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '8 不应 error: ' + e.message); },
   });
   ok(fs.existsSync(doc) && fs.readFileSync(doc, 'utf8') === '# part1\n# part2\n', '截断重试后真实写入（覆盖+append 追加）');
@@ -364,7 +390,7 @@ section('用例 9：声称已写入守卫（claim-without-write）');
   ];
   llmCalls = [];
   await loop.startRun({
-    reqId: 'chat_e2e_9', instruction: '整理目录并写入报告', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_9', instruction: '/order 整理目录并写入报告', baseMessages: baseMsgs(),
     onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '9 不应 error: ' + e.message); },
   });
   ok(fs.existsSync(doc) && fs.readFileSync(doc, 'utf8') === 'report', '重试后文件真实写入');
@@ -388,7 +414,7 @@ section('用例 9b：顽固幻觉 → 系统核实注记');
   llmCalls = [];
   let finalFl = null;
   await loop.startRun({
-    reqId: 'chat_e2e_9b', instruction: '写 ghost.md', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_9b', instruction: '/order 写 ghost.md', baseMessages: baseMsgs(),
     onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '9b 不应 error: ' + e.message); },
   });
   ok(!fs.existsSync(ghost), '文件确实未写入');
@@ -402,7 +428,7 @@ section('用例 9b：顽固幻觉 → 系统核实注记');
 section('用例 10：save_memory 落库长期记忆（「记下了」变成真的）');
 {
   llmScript = [
-    { content: '我把这点固化下来。', toolCalls: [{ id: 'c1', name: 'save_memory', argsRaw: JSON.stringify({ content: '用户偏好简洁直接的沟通风格（测试记忆）', importance: '4', type: 'preference' }) }], finishReason: 'tool_calls' },
+    { content: '我把这点固化下来。', toolCalls: [{ id: 'c1', name: 'save_memory', argsRaw: JSON.stringify({ content: '用户偏好纯思辨性哲学探讨，非项目焦虑', importance: '4', type: 'preference' }) }], finishReason: 'tool_calls' },
     { content: '记下了，这次真的写进长期记忆了。[情绪:开心]', finishReason: 'stop' },
   ];
   llmCalls = [];
@@ -412,7 +438,7 @@ section('用例 10：save_memory 落库长期记忆（「记下了」变成真�
     onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '10 不应 error: ' + e.message); },
   });
   const memItems = store.get('memory/roleplay').items;
-  ok(memItems.some(i => i.content === '用户偏好简洁直接的沟通风格（测试记忆）' && i.type === 'preference' && i.importance === 4), '记忆真实入库（内容/类型/重要性归一）');
+  ok(memItems.some(i => i.content === '用户偏好纯思辨性哲学探讨，非项目焦虑' && i.type === 'preference' && i.importance === 4), '记忆真实入库（内容/类型/重要性归一）');
   const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_10');
   ok(rec && rec.status === 'done', 'run 正常收尾');
   const toolStep = rec.steps.find(s => s.kind === 'tool' && s.tool === 'save_memory');
@@ -439,7 +465,7 @@ section('用例 11：声称已读取守卫（read-claim，零 read_file）');
   llmCalls = [];
   let finalFl = null;
   await loop.startRun({
-    reqId: 'chat_e2e_11', instruction: 'D:\\CC_project\\deskpal\\docs\\log 这个文件夹里有全部聊天记录，读完再回答', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_11', instruction: '/order D:\\CC_project\\deskpal\\docs\\log 这个文件夹里有全部聊天记录，读完再回答', baseMessages: baseMsgs(),
     onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '11 不应 error: ' + e.message); },
   });
   const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_11');
@@ -464,7 +490,7 @@ section('用例 12：「落盘/校验完成」措辞的写入声称守卫');
   permDecision = 'allow_once';
   llmCalls = [];
   await loop.startRun({
-    reqId: 'chat_e2e_12', instruction: '把笔录生成在 docs\\log 文件夹内', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_12', instruction: '/order 把笔录生成在 docs\\log 文件夹内', baseMessages: baseMsgs(),
     onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '12 不应 error: ' + e.message); },
   });
   ok(fs.existsSync(notes) && fs.readFileSync(notes, 'utf8') === '笔录正文', '重试后笔录真实落盘');
@@ -484,7 +510,7 @@ section('用例 13：顽固虚假读取 → 兜底注记（复现 run20 重试�
   llmCalls = [];
   let finalFl = null;
   await loop.startRun({
-    reqId: 'chat_e2e_13', instruction: '看一下数据目录 temp 里的报告再总结', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_13', instruction: '/order 看一下 docs\\log 里的测评报告再总结', baseMessages: baseMsgs(),
     onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '13 不应 error: ' + e.message); },
   });
   ok(finalFl && finalFl.clean.includes('系统核实：本次任务没有实际读取任何文件'), '读取兜底注记附加（不单独放行虚假读取）');
@@ -504,7 +530,7 @@ section('用例 14：多轮工具循环回传 reasoning_content');
   ];
   llmCalls = [];
   await loop.startRun({
-    reqId: 'chat_e2e_14', instruction: '读目录并建 reasoning-notes.md', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_14', instruction: '/order 读目录并建 reasoning-notes.md', baseMessages: baseMsgs(),
     onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '14 不应 error: ' + e.message); },
   });
   // 第 2 轮请求：assistant(tool_calls) 消息必须带上一轮的 reasoning_content
@@ -532,7 +558,7 @@ section('用例 15：响应流中途断开的有界续跑');
   llmCalls = [];
   let finalFl = null;
   await loop.startRun({
-    reqId: 'chat_e2e_15', instruction: '读 docs\\log 里的四个文件', baseMessages: baseMsgs(),
+    reqId: 'chat_e2e_15', instruction: '/order 读 docs\\log 里的四个文件', baseMessages: baseMsgs(),
     onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '15 不应 error: ' + e.message); },
   });
   const rec = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_15');
@@ -542,6 +568,282 @@ section('用例 15：响应流中途断开的有界续跑');
   ok(!!cutMsg, '续跑指引（继续调用工具+完整答复）注入');
   ok(rec.steps.some(s => s.kind === 'tool' && s.tool === 'read_file' && s.ok === true), '续跑后真实读取');
   ok(finalFl && finalFl.clean.includes('断流续跑样本'), '最终回复完整（非半句）');
+}
+
+// ============ 用例 16：戏内/戏外通道（dev.5 系列机制级收口，用户决策 2026-09-29） ============
+section('用例 16：戏内轮结构性收权 + 守卫无条件放行');
+{
+  // 16a：未打标 = 戏内。指令按旧规则会被判任务（帮我+看）且回复带完成态自述——
+  // 旧代码这里 READ_CLAIM 必开火；新代码通道闸放行。工具面同时收权（run_mulmo919_2 同源事故）。
+  llmScript = [
+    { content: '它是后验打法：读完所有代码，穷举出代码里存在的所有行为路径。我已经把项目全部读完了，讲讲我的看法。', finishReason: 'stop' },
+  ];
+  llmCalls = [];
+  let finalFl16 = null;
+  await loop.startRun({
+    reqId: 'chat_e2e_16', instruction: '帮我对比一下打法——它读完了所有代码文件，穷举出所有行为路径，你呢？', baseMessages: baseMsgs(),
+    onFinal: async (fl) => { finalFl16 = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '16a 不应 error: ' + e.message); },
+  });
+  const rec16 = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_16');
+  ok(rec16 && rec16.channel === 'roleplay', '未打标 → 台账 channel=roleplay');
+  const toolNames16 = ((llmCalls[0].overrides || {}).tools || []).map(t => t.function.name).sort();
+  eq(toolNames16, ['save_memory', 'web_search'], '戏内轮仅下发 web_search + save_memory（文件类工具结构性收权）');
+  ok(rec16 && rec16.retries === 0, '戏内轮守卫无条件放行（完成态自述/第三者转述不再触发重试）');
+  ok(finalFl16 && finalFl16.clean.includes('读完所有代码'), '最终回复正常送达');
+
+  // 16b：戏内轮模型越权请求文件工具（服务商异常/注入路径）→ 执行层兜底拒绝
+  llmScript = [
+    { content: '我看看目录。', toolCalls: [{ id: 'c16b', name: 'list_dir', argsRaw: JSON.stringify({ path: 'C:/极其可疑的目录' }) }], finishReason: 'tool_calls' },
+    { content: '这轮拿不到文件工具，那就不看了。', finishReason: 'stop' },
+  ];
+  llmCalls = [];
+  await loop.startRun({
+    reqId: 'chat_e2e_16b', instruction: '帮我看看有什么新东西（未打标）', baseMessages: baseMsgs(),
+    onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '16b 不应 error: ' + e.message); },
+  });
+  const rec16b = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_16b');
+  const denyStep = rec16b.steps.find(s => s.kind === 'tool' && s.tool === 'list_dir');
+  ok(denyStep && denyStep.ok === false, '戏内轮越权工具调用被执行层拒绝（ok=false）');
+  ok(rec16b && rec16b.status === 'done', '拒绝后 run 正常收尾');
+
+  // 16c：/order 打标 = 戏外工作轮，工具全量下发、守卫武装（写入声称重试照常工作）
+  llmScript = [
+    { content: '整理好了，清单已经写入 report.md。', finishReason: 'stop' },
+    { content: '（补做）清单真实写入完毕。', finishReason: 'stop' },
+  ];
+  llmCalls = [];
+  await loop.startRun({
+    reqId: 'chat_e2e_16c', instruction: '/order 整理目录', baseMessages: baseMsgs(),
+    onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '16c 不应 error: ' + e.message); },
+  });
+  const rec16c = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_16c');
+  ok(rec16c && rec16c.channel === 'work', '/order 打标 → 台账 channel=work');
+  ok(rec16c && rec16c.retries === 1, '戏外轮假完成守卫照常武装（重试 1 次）');
+  ok(rec16c && Array.isArray(rec16c.wipedRounds) && rec16c.wipedRounds.length === 1
+    && rec16c.wipedRounds[0].content.includes('已经写入'), '被重试轮正文全量留档（wipedRounds，dev.5+3）');
+  const toolNames16c = ((llmCalls[0].overrides || {}).tools || []).map(t => t.function.name);
+  ok(toolNames16c.includes('write_file') && toolNames16c.includes('read_file'), '戏外轮文件类工具全量下发');
+}
+
+// ============ 用例 17：add_reminder 通道与落库（repeat 功能） ============
+section('用例 17：add_reminder 戏外可下发、创建真实落库、同名软去重');
+{
+  const scheduler = require(SVC('schedule/scheduler'));
+  scheduler.start(); // 加载事件库（此前的用例不涉及日程，库为空）
+  // 日期动态化（2026-10-02 事故：写死 2026-10-01 的 start 过期后顺延，断言随日期失效）：
+  // 取明天，保证 start 在未来、首次提醒按字面物化，滚动续期行为由 test-schedule-repeat.js 覆盖
+  const d17 = new Date(Date.now() + 36 * 3600 * 1000);
+  const d17Str = `${d17.getFullYear()}-${String(d17.getMonth() + 1).padStart(2, '0')}-${String(d17.getDate()).padStart(2, '0')}`;
+
+  // 17a：戏外工作轮自然语言设每日提醒 → 工具真实落库（含 repeat）
+  llmScript = [
+    {
+      content: '好，我来设置。',
+      toolCalls: [{ id: 'c17', name: 'add_reminder', argsRaw: JSON.stringify({ title: '喝水', start: `${d17Str} 09:00`, repeat: 'daily' }) }],
+      finishReason: 'tool_calls',
+    },
+    { content: '已设好每天 9 点的喝水提醒。[情绪:开心]', finishReason: 'stop' },
+  ];
+  llmCalls = [];
+  await loop.startRun({
+    reqId: 'chat_e2e_17', instruction: '/order 每天早上九点提醒我喝水', baseMessages: baseMsgs(),
+    onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '17a 不应 error: ' + e.message); },
+  });
+  const toolNames17 = ((llmCalls[0].overrides || {}).tools || []).map(t => t.function.name);
+  ok(toolNames17.includes('add_reminder'), '戏外轮下发 add_reminder');
+  const evt17 = scheduler.listEvents().find(e => e.title === '喝水');
+  ok(!!evt17, 'add_reminder 真实创建日程事件');
+  ok(evt17 && evt17.repeat === 'daily' && evt17.source === 'chat', 'repeat=daily 落库、来源=chat');
+  ok(evt17 && evt17.reminders.some(r => r.status === 'pending' && r.at.startsWith(`${d17Str}T09:00`)), `首次提醒物化在 ${d17Str} 09:00`);
+  const rec17 = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_17');
+  ok(rec17 && rec17.channel === 'work' && rec17.status === 'done', '戏外轮 run 正常收尾');
+  const toolStep17 = rec17.steps.find(s => s.kind === 'tool' && s.tool === 'add_reminder');
+  ok(toolStep17 && toolStep17.ok, 'add_reminder 步骤成功入台账');
+
+  // 17b：同名重复提醒软去重（防跨轮堆积）
+  llmScript = [
+    {
+      content: '再设一次。',
+      toolCalls: [{ id: 'c17b', name: 'add_reminder', argsRaw: JSON.stringify({ title: '喝水', start: `${d17Str} 15:00`, repeat: 'daily' }) }],
+      finishReason: 'tool_calls',
+    },
+    { content: '已经有同名的了。', finishReason: 'stop' },
+  ];
+  await loop.startRun({
+    reqId: 'chat_e2e_17b', instruction: '/order 再设一个每天喝水的提醒', baseMessages: baseMsgs(),
+    onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '17b 不应 error: ' + e.message); },
+  });
+  ok(scheduler.listEvents().filter(e => e.title === '喝水' && e.status === 'pending').length === 1, '同名每日提醒未重复创建');
+}
+
+// ============ 用例 18：断流且正文已外化（committed）→ 不重试、如实收尾 + 系统注记 ============
+section('用例 18：streamCut committed 路径（P0-3）');
+{
+  store.set('settings', { agent: { permissionMode: 'full' } });
+  llmScript = [
+    // 第一轮：流断（streamCut），且正文已外化（committed）——重试会让用户看到重复半截、
+    // reset 会抹掉已示人内容，只能如实收尾
+    { content: '我把报告的第一部分写', toolCalls: [], finishReason: null, streamCut: true, committed: true, streamError: { layer: 'frame', message: '网络空闲超时' } },
+  ];
+  llmCalls = [];
+  let finalFl = null, donePayload = null;
+  await loop.startRun({
+    reqId: 'chat_e2e_18', instruction: '/order 把报告写进 temp', baseMessages: baseMsgs(),
+    onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: (x) => { donePayload = x; }, onAborted: () => {}, onError: (e) => { ok(false, 'committed 收尾不应 error: ' + e.message); },
+  });
+  ok(llmCalls.length === 1, '不再自动重试（committed 不可重放）');
+  ok(finalFl && finalFl.clean.includes('我把报告的第一部分写'), '半截正文原样保留（未 reset）');
+  ok(finalFl && finalFl.clean.includes('（系统注记：'), '附诚实注记（可能不完整）');
+  const rec18 = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_18');
+  ok(rec18 && rec18.status === 'done', 'run 正常收尾（done 而非 error）');
+  ok(rec18.steps.some(s => s.kind === 'notice' && s.notice === 'stream_cut_partial' && String(s.text).includes('frame')), 'notice 记录断流层别');
+}
+
+// ============ 用例 19：断流未外化 + 半截工具调用 → 有界续跑 + [未执行] 显式回执 ============
+section('用例 19：streamCut 续跑与 NOT_EXECUTED 回执（P0-1）');
+{
+  store.set('settings', { agent: { permissionMode: 'full' } });
+  llmScript = [
+    // 第一轮：流断、零正文外化（committed=false）、半截工具调用——续跑且半截调用留显式回执
+    { content: '', toolCalls: [{ id: 'c19', name: 'write_file', argsRaw: '{"path":"D:/x/a.md","con' }], finishReason: null, streamCut: true, committed: false },
+    // 续跑轮：真实执行一次工具（否则零执行的「完成了」叙述会正当地触发假完成守卫）
+    { content: '重发调用。', toolCalls: [{ id: 'c19b', name: 'list_dir', argsRaw: JSON.stringify({ path: path.join(TMP, 'temp') }) }], finishReason: 'tool_calls' },
+    { content: '这次完成了。', finishReason: 'stop' },
+  ];
+  llmCalls = [];
+  await loop.startRun({
+    reqId: 'chat_e2e_19', instruction: '/order 写文件', baseMessages: baseMsgs(),
+    onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '续跑不应 error: ' + e.message); },
+  });
+  ok(llmCalls.length === 3, '有界续跑（续跑轮重发真实调用后收尾）');
+  const r2 = llmCalls[1].messages;
+  const halfAsst = r2.find(m => m.role === 'assistant' && m.tool_calls && m.tool_calls.some(c => c.id === 'c19'));
+  ok(!!halfAsst, '半截 assistant tool_calls 原样进历史');
+  const receipt = r2.find(m => m.role === 'tool' && m.tool_call_id === 'c19');
+  ok(receipt && receipt.content.includes('[未执行]') && receipt.content.includes('不可信'), '半截调用配 [未执行] 显式回执（配对不悬空）');
+  const rec19 = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_19');
+  ok(rec19.steps.some(s => s.kind === 'notice' && s.notice === 'stream_cut_retry'), '续跑 notice 入台账');
+}
+
+// ============ 用例 20：length 截断 + 半截调用 → [未执行] 回执（P0-1） ============
+section('用例 20：length 截断的显式回执');
+{
+  llmScript = [
+    { content: '我开始写了', toolCalls: [{ id: 'c20', name: 'write_file', argsRaw: '{"path":"' }], finishReason: 'length' },
+    { content: '这次分段写完了。', finishReason: 'stop' },
+  ];
+  llmCalls = [];
+  await loop.startRun({
+    reqId: 'chat_e2e_20', instruction: '/order 写文件', baseMessages: baseMsgs(),
+    onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '截断重试不应 error: ' + e.message); },
+  });
+  const r2 = llmCalls[1].messages;
+  const receipt20 = r2.find(m => m.role === 'tool' && m.tool_call_id === 'c20');
+  ok(receipt20 && receipt20.content.includes('max_tokens'), 'length 截断的回执点名原因');
+  ok(r2.some(m => m.role === 'system' && m.content.includes('截断')), '截断纠正指令照旧注入');
+}
+
+// ============ 用例 21：上下文溢出 → 记忆固化 + 两级压缩续跑（P0-4） ============
+section('用例 21：contextOverflow 溢出交接');
+{
+  const bigBase = [
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: '很早的消息1' },
+    { role: 'assistant', content: '旧回复1' },
+    { role: 'user', content: '很早的消息2' },
+    { role: 'assistant', content: '旧回复2' },
+    { role: 'user', content: '当前指令' },
+  ];
+  llmScript = [
+    { __throwOverflow: true },                                     // 第一次：溢出
+    { __throwOverflow: true },                                     // 第二次：一级压缩后仍溢出（工具轮也清）
+    { content: '压缩后续跑成功。', finishReason: 'stop' },          // 第三次：成功
+  ];
+  llmCalls = [];
+  let overflowCb = 0;
+  await loop.startRun({
+    reqId: 'chat_e2e_21', instruction: '/order 继续任务', baseMessages: bigBase,
+    onContextOverflow: async () => { overflowCb++; },
+    onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '溢出续跑不应 error: ' + e.message); },
+  });
+  ok(llmCalls.length === 3, '两次压缩后续跑成功（共 3 次调用）');
+  ok(overflowCb === 2, '每次压缩前都触发记忆固化钩子');
+  const r3 = llmCalls[2].messages; // 二级压缩后：base= system+注记+末2条，toolTurns 清空
+  ok(r3.length === 4, `二级压缩后上下文只剩 4 条（got ${r3.length}）`);
+  ok(r3[0].role === 'system' && r3[1].role === 'system' && r3[1].content.includes('压缩') && r3[1].content.includes('固化'), '压缩注记含记忆固化说明');
+  ok(r3[2].content === '旧回复2' && r3[3].content === '当前指令', '保留最近一轮问答');
+  const rec21 = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_21');
+  ok(rec21 && rec21.status === 'done', 'run 最终 done（溢出未变成报错）');
+  ok(rec21.steps.filter(s => s.kind === 'notice' && s.notice === 'context_overflow').length === 2, '两级压缩 notice 入台账');
+}
+
+// ============ 用例 22：用量转发与聚合（P0-2 锚点数据源 + 本轮消耗外显） ============
+section('用例 22：onUsage 首轮锚点转发 + 全轮次聚合');
+{
+  llmScript = [
+    { content: '先用工具。', toolCalls: [{ id: 'c22', name: 'list_dir', argsRaw: JSON.stringify({ path: path.join(TMP, 'temp') }) }], finishReason: 'tool_calls', usage: { prompt_tokens: 1234, completion_tokens: 56, completion_tokens_details: { reasoning_tokens: 40 } } },
+    { content: '收尾。', finishReason: 'stop', usage: { prompt_tokens: 9999, completion_tokens: 21, completion_tokens_details: { reasoning_tokens: 1 } } }, // 工具轮用量不进锚点但进聚合
+  ];
+  llmCalls = [];
+  const got = [];
+  let donePayload = null;
+  await loop.startRun({
+    reqId: 'chat_e2e_22', instruction: '/order 列目录', baseMessages: baseMsgs(),
+    onUsage: (u) => got.push(u),
+    onFinal: async () => ({}), onDone: (x) => { donePayload = x; }, onAborted: () => {}, onError: (e) => { ok(false, '用量转发路径不应 error: ' + e.message); },
+  });
+  ok(got.length === 1 && got[0].prompt_tokens === 1234, `只转发首个基础轮用量作锚点（got ${JSON.stringify(got)}）`);
+  ok(donePayload && donePayload.usage, 'onDone 携带本轮消耗合计');
+  eq(donePayload.usage, { input: 1234 + 9999, output: 56 + 21, reasoning: 40 + 1, cacheHit: null, requests: 2 }, '聚合=全部请求合计（输入/思考/回复/次数）');
+  const rec22 = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_22');
+  eq(rec22.usage, { input: 11233, output: 77, reasoning: 41, cacheHit: null, requests: 2 }, '台账 record.usage 落档');
+}
+
+// ============ 用例 23：零字节断流（首响应超时）→ 不推空 assistant + 续跑（20261002 事故回归） ============
+section('用例 23：零字节断流续跑不产生协议非法消息');
+{
+  store.set('settings', { agent: { permissionMode: 'full' } });
+  llmScript = [
+    // 首响应超时形态：零字节（无正文/无思考/无调用）、流断、未外化——桩的 DeepSeek 式
+    // 校验会拦下任何被推入的空 assistant 消息（复现 run_mupxfru8_1 的 400）
+    { content: '', reasoning: '', toolCalls: [], finishReason: null, streamCut: true, committed: false },
+    { content: '这次正常完成了。', finishReason: 'stop' },
+  ];
+  llmCalls = [];
+  let finalFl = null;
+  await loop.startRun({
+    reqId: 'chat_e2e_23', instruction: '/order 继续任务', baseMessages: baseMsgs(),
+    onFinal: async (fl) => { finalFl = fl; return {}; }, onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '零字节续跑不应 error: ' + e.message); },
+  });
+  ok(llmCalls.length === 2, '零字节断流后有界续跑（共 2 次调用）');
+  const r2 = llmCalls[1].messages;
+  ok(!r2.some(m => m.role === 'assistant'), '零字节轮未推任何 assistant 消息（无物可留，协议安全）');
+  ok(r2.some(m => m.role === 'system' && m.content.includes('输出开始前被中断')), '零字节专用续跑指令（区别于半句断开）');
+  const rec23 = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_23');
+  ok(rec23 && rec23.status === 'done' && rec23.lengthRetries === 1, 'run done、断流重试计数 1');
+  ok(finalFl && finalFl.clean.includes('正常完成'), '续跑后正常收尾');
+}
+
+// ============ 用例 24：半截轮 reasoning 缺失 → deepseek 垫占位符（协议闸） ============
+section('用例 24：半截轮 reasoning_content 垫底');
+{
+  // 桩模型名不是 deepseek → isDeepseek false → 不垫。临时把 model 换成 deepseek 系验证垫底分支
+  store.set('api', { endpoint: 'http://stub', model: 'deepseek-chat', params: { maxTokens: 2048 } });
+  llmScript = [
+    // 有正文（已思考过但桩不给 reasoning——模拟 reasoning 字段缺失的极端断流形态）、无调用
+    { content: '写到一半', reasoning: '', toolCalls: [], finishReason: null, streamCut: true, committed: false },
+    { content: '续上并完成。', finishReason: 'stop' },
+  ];
+  llmCalls = [];
+  await loop.startRun({
+    reqId: 'chat_e2e_24', instruction: '/order 写文件', baseMessages: baseMsgs(),
+    onFinal: async () => ({}), onDone: () => {}, onAborted: () => {}, onError: (e) => { ok(false, '垫底路径不应 error: ' + e.message); },
+  });
+  const r2 = llmCalls[1].messages;
+  const asst24 = r2.find(m => m.role === 'assistant');
+  ok(asst24 && asst24.reasoning_content === '-', `deepseek 端点半截轮 reasoning_content 垫 '-'（got ${asst24 && JSON.stringify(asst24.reasoning_content)}）`);
+  // 还原桩模型名，避免影响后续（无后续用例）
+  store.set('api', { endpoint: 'http://stub', model: 'stub', params: { maxTokens: 2048 } });
 }
 
 function eq(a, b, name) {
