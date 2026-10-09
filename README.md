@@ -10,6 +10,10 @@ Windows 桌面宠物应用（Electron）：让一位 AI 伙伴住在你的桌面
   <img src="resources/icon-256.png" width="128" alt="deskpal 图标">
 </p>
 
+## 📥 下载安装
+
+到 [Releases](https://github.com/koukai21804-gif/deskpal/releases/latest) 下载 `deskpal Setup <版本>.exe`（Windows 10/11 x64），双击安装，可选安装目录，会创建桌面快捷方式。首次启动后到 **设置 → API** 填入你的 LLM 服务商 Key（DeepSeek 等 OpenAI 兼容接口）即可使用；不填 Key 也可以先用桌面宠物、日程提醒等本地功能。不想装安装包的话，也可以 `npm install && npm start` 从源码运行。
+
 ## ✨ 功能一览
 
 | 功能 | 入口 | 说明 |

@@ -10,6 +10,10 @@ The built-in default character is **Titor Noreiji** — a knowledgeable, mildly 
   <img src="resources/icon-256.png" width="128" alt="deskpal icon">
 </p>
 
+## 📥 Download
+
+Grab `deskpal Setup <version>.exe` (Windows 10/11 x64) from [Releases](https://github.com/koukai21804-gif/deskpal/releases/latest), double-click to install (custom directory supported, desktop shortcut created). On first launch, go to **Settings → API** and fill in your LLM provider key (DeepSeek or any OpenAI-compatible endpoint); local features like the desktop pet, schedule reminders and time tracking work without a key. Prefer source? `npm install && npm start`.
+
 ## ✨ Features
 
 | Feature | Entry | Description |
