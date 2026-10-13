@@ -283,7 +283,7 @@ function registerIpc() {
   // 前辈的聊天走 chat:send，两条通路在数据层互斥，不可能混淆。
   handle('noreki:send', ({ kind, body, ref } = {}) => {
     const r = norekiLink.send(String(kind || 'note'), String(body || ''), String(ref || ''));
-    if (!r.ok) throw new Error('NorekiLink 未就绪：' + (r.error || 'unknown'));
+    if (!r.ok) throw new Error('NOREKI-Mail 发送失败：' + (r.error || 'unknown') + (r.detail ? '（' + r.detail + '）' : ''));
     return r;
   });
   handle('noreki:fetch', () => ({ delivered: norekiLink.fetchOnce() || 0 }));

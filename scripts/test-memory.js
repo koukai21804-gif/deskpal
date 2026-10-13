@@ -52,6 +52,7 @@ section('listMemories：旧条目补 id（持久化）+ 按重要性排序');
   eq(list1[0].content, '旧B', '重要性高的排前');
   const list2 = memory.listMemories();
   eq(list2.map(it => it.id), list1.map(it => it.id), 'id 归一化已持久化（再次列出 id 不变）');
+  ok2(list1.every(it => /^mem_/.test(it.id)), 'P0-4 断言：无 id 条目回填后均带 mem_ 前缀 id');
 }
 
 // ============ 3. addMemory：校验 + 淘汰 ============
