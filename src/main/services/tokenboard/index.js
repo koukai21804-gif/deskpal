@@ -1,4 +1,4 @@
-// token 看板服务：编排 12 个 provider（11 个外部 AI 工具 + deskpal 自身），
+// token 看板服务：编排 13 个 provider（11 个外部 AI 工具 + deskpal 自身 + Hindsight 记忆），
 // 聚合出面板所需的完整快照（时间窗 / 工具 / 模型 / 会话 / 设备 / 限额）。
 // 设计约束：纯 Node、无 electron 依赖（测试可直接跑）；文件级 memo 让增量刷新只重解析变化文件。
 const os = require('os');
@@ -15,6 +15,7 @@ const PROVIDERS = [
   require('./providers/qoder'),
   require('./providers/workbuddy'),
   require('./providers/deskpal'),
+  require('./providers/hindsight'),
 ];
 
 const memo = new Map(); // fileKey → 解析结果（进程内增量；文件不变不重解析）

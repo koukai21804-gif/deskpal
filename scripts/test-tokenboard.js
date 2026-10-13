@@ -400,6 +400,36 @@ section('模型 byTool 分桶');
     'deskpal 模型 byTool 含 deskpal 桶');
 }
 
+// ============ 12. hindsight provider（usage 台账解析） ============
+section('hindsight 记忆 token（代理 usage 台账）');
+{
+  const usageFile = path.join(TMP, 'usage.jsonl');
+  const now = Date.now();
+  fs.writeFileSync(usageFile, [
+    JSON.stringify({ ts: now - 3600e3, bank: 'deskpal-tito', input: 3000, output: 100, cached: 500, requests: 1 }),
+    JSON.stringify({ ts: now, bank: 'hermes-main', input: 2000, output: 50, cached: 0, requests: 1 }),
+    'not-json-line',
+  ].join('\n'));
+  process.env.HINDSIGHT_USAGE_LOG = usageFile;
+  delete require.cache[require.resolve(SVC('providers/hindsight.js'))];
+  const hp = require(SVC('providers/hindsight.js'));
+  const res = hp.scan({});
+  eq(res.status, 'ok', '台账存在 → status ok');
+  eq(res.sessions.length, 2, '两个 bank → 两个会话');
+  const tito = res.sessions.find(x => x.id === 'hindsight:deskpal-tito');
+  ok(tito && tito.events.length === 1 && tito.events[0].input === 3000 && tito.events[0].cacheRead === 500,
+    'deskpal-tito 事件 input=3000 cacheRead=500（cached→cacheRead 映射）');
+  ok(res.sessions[0].lastAt >= res.sessions[1].lastAt, '会话按最近活跃降序');
+  eq(res.sessions.reduce((n, x) => n + x.events.length, 0), 2, '坏 JSON 行被跳过');
+  const snapH = tb.query({ home: HOME, dataDir: DATADIR, deskpalModel: null, config: { devices: [{ label: 'PC-2', path: path.join(TMP, 'home2') }], limits: {} } });
+  const hrow = (snapH.tools || []).find(t => t.id === 'hindsight');
+  ok(hrow && hrow.windows.all.input === 5000, 'hindsight 只计一次（input=3000+2000，不随设备翻倍）');
+  process.env.HINDSIGHT_USAGE_LOG = path.join(TMP, 'no-such.jsonl');
+  delete require.cache[require.resolve(SVC('providers/hindsight.js'))];
+  const res2 = require(SVC('providers/hindsight.js')).scan({});
+  eq(res2.status, 'missing', '台账不存在 → status missing');
+  delete process.env.HINDSIGHT_USAGE_LOG;
+}
 console.log(`\n========== token 看板测试: ${passed} 通过, ${failed} 失败 ==========`);
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) {}
 process.exit(failed ? 1 : 0);
