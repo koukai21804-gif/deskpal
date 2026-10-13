@@ -41,6 +41,22 @@ function memoriesBlock() {
   return '\n' + parts.join('\n\n');
 }
 
+// Hindsight 语义记忆注入（v0.6，M3）：检索召回的既往事实。预算 ≤1200 字符（bridge 已截 k=6）。
+// 区头带策展层优先声明（评审 §三）：语义召回未经策展，与策展层冲突以策展层为准。
+function hindsightBlock(recalls) {
+  const list = Array.isArray(recalls) ? recalls.filter(Boolean) : [];
+  if (!list.length) return '';
+  const parts = [];
+  let budget = 1200;
+  for (const t of list) {
+    const line = '- ' + t;
+    if (budget - line.length < 0) break;
+    parts.push(line); budget -= line.length;
+  }
+  if (!parts.length) return '';
+  return '\n【深层记忆 · 检索召回】（与当前话题相关的既往事实，未经策展；与上方策展层冲突时以策展层为准。自然回忆即可，不要逐条复述）\n' + parts.join('\n');
+}
+
 // NOREKI-Mail 信箱认知（v1.5）：她「知道信箱、知道有未读、记得发过什么」的字面实现——
 // 全部从状态账本（显式文件）读取，LLM 不记账。账本由 services/noreki-link.js 维护。
 // 空信箱只注入一行通道存在性说明（保留认知锚点，成本一行）。
@@ -227,7 +243,7 @@ function beatSection() {
    末行 [情绪:XX] 仍必须附（兜底）。`;
 }
 
-function roleplaySystem() {
+function roleplaySystem(opts = {}) {
   const P = canon.get();
   const pet = persona(P).pet, user = P.user;
   const c = P.canon;
@@ -256,7 +272,7 @@ ${section('形象与风格', [
 【对话对象】
 与你对话的人是${user.name || '主人'}。${user.description || ''}
 ${profileBlock()}
-${memoriesBlock()}
+${memoriesBlock()}${hindsightBlock(opts.hindsight)}
 ${readingDigestBlock()}
 ${mailboxBlock()}
 

@@ -29,6 +29,7 @@ const FILE_MAP = {
   'canon/opshist': 'config/ops-history.json',
   'schedule/events': 'schedule/events.json',
   'tokenBoard': 'config/token-board.json',
+  hindsight: 'config/hindsight.json',
 };
 
 // 内置默认宠物「缇托·诺蕾姬」的形象差分图（resources/pet/titor/<emotion>.png）
@@ -48,6 +49,15 @@ const DEFAULTS = {
     activity: { paused: false, idleThresholdSec: 180, windowPollMs: 1000, idlePollMs: 5000 },
     schedule: { leadEvent: 60, leadStart: 5, leadDeadline: 120, snoozeMin: 10, sound: true, systemNotification: true, catchupHours: 24 },
     agent: { enabled: true, maxRounds: 8, permissionTimeoutSec: 120, permissionMode: 'read', toolMaxTokens: 8192, toolCtxTokenBudget: 40000, webSearch: { enabled: false, autonomousDailyLimit: 100, cooldownMin: 10, blockedTopics: [] } },
+  },
+  // Hindsight 语义记忆桥（v0.6）：apiUrl 指向过滤代理；autoPrompt=false 关闭启动询问
+  hindsight: {
+    enabled: true,
+    apiUrl: 'http://127.0.0.1:8890',
+    bank: 'deskpal-tito',
+    recallK: 6,
+    recallTimeoutMs: 8000,  // hindsight recall 实测 3-8s（四路检索+GPU 重排），1.2s 必然超时（M4 实测修正）
+    autoPrompt: true,
   },
   // 人格三层结构（v0.4.0-dev.5，TITOR-CANON v1.0）：
   //   canon = 锁层（L1 身份锚 / L2 关系定义 / L3 三铁律+禁忌 / L4 语言签名）——
