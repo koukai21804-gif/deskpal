@@ -435,7 +435,9 @@ async function renderApi() {
   const PRESETS = [
     { name: '自定义', endpoint: '', model: '' },
     { name: 'DeepSeek', endpoint: 'https://api.deepseek.com', model: 'deepseek-chat' },
-    { name: '智谱 GLM', endpoint: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model: 'glm-4' },
+    // 智谱预设指向 Coding 套餐专属端点（套餐 Key 只认 /api/coding/paas/v4，通用 paas/v4 不收）；
+    // 按量计费的普通 Key 请选「自定义」填 https://open.bigmodel.cn/api/paas/v4
+    { name: '智谱 GLM（Coding 套餐）', endpoint: 'https://open.bigmodel.cn/api/coding/paas/v4', model: 'glm-4.6' },
     { name: 'Kimi', endpoint: 'https://api.moonshot.cn/v1/chat/completions', model: 'moonshot-v1-8k' },
     { name: '通义千问', endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', model: 'qwen-plus' },
     { name: 'OpenAI', endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o-mini' },
@@ -450,13 +452,22 @@ async function renderApi() {
     <div class="field"><span class="label">接口预设</span>
       <select id="a-preset">${PRESETS.map(p => `<option value="${esc(p.endpoint)}" ${cur.name === p.name ? 'selected' : ''}>${p.name}</option>`).join('')}</select></div>
     <div class="field"><span class="label">接口地址（填 base 地址或完整 chat/completions 地址均可）</span><input type="text" id="a-endpoint" value="${esc(api.endpoint)}" style="width:100%"></div>
-    <div class="field"><span class="label">模型名（填好地址与 Key 后自动获取，点击输入框从列表选择）</span>
+    <div class="field"><span class="label">模型名（填好地址与 Key 后自动获取；点击输入框看完整列表，输入可筛选）</span>
       <div class="row" style="gap:8px">
-        <input type="text" id="a-model" value="${esc(api.model)}" list="a-model-list" style="flex:1" autocomplete="off">
+        <div style="position:relative;flex:1;min-width:0">
+          <input type="text" id="a-model" value="${esc(api.model)}" style="width:100%" autocomplete="off">
+          <div id="a-model-menu" hidden style="position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:60;max-height:264px;overflow-y:auto;background:var(--dp-panel);border:1px solid var(--dp-border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.16);padding:4px"></div>
+        </div>
         <button class="btn btn-sm" id="a-model-fetch" title="从接口拉取可用模型列表">🔄 获取模型</button>
       </div>
-      <datalist id="a-model-list"></datalist>
       <div class="hint" id="a-model-status"></div></div>
+    <div class="field"><span class="label">图像识别（多模态 Vision）——开启后 Agent 可用 read_image 工具读取图片文件</span>
+      <select id="a-vision" style="max-width:360px">
+        <option value="auto" ${(api.vision === undefined || api.vision === 'auto') ? 'selected' : ''}>自动检测（按模型名识别，推荐）</option>
+        <option value="on" ${api.vision === true ? 'selected' : ''}>强制开启（模型支持图像输入）</option>
+        <option value="off" ${api.vision === false ? 'selected' : ''}>关闭（纯文本模型）</option>
+      </select>
+      <div class="hint" id="a-vision-hint"></div></div>
     <div class="field"><span class="label">API Key（${api.hasKey ? '已配置 ●' : '未配置'}，经系统安全存储加密）</span>
       <input type="password" id="a-key" placeholder="${api.hasKey ? '留空则不修改' : 'sk-...'}" autocomplete="new-password"></div>
     <details style="margin:8px 0 14px"><summary style="cursor:pointer;font-size:13px;color:var(--dp-text-muted)">⚙️ 高级参数</summary>
@@ -473,6 +484,33 @@ async function renderApi() {
       <span class="hint" id="a-test-result"></span>
     </div>
     <p class="hint">聊天、陪读剧情生成、日程解析、时间报告都需要它。Key 使用 Windows 凭据保护（safeStorage）加密存储。</p>
+  </div>
+  <div class="set-section">
+    <h3 style="margin-top:0">🎬 视频解析（陪读视频源：B站 / YouTube / MP4 直链 / 本地视频）</h3>
+    <p class="hint">流程：优先抓取视频字幕（不花转写费）；无字幕时下载音频做语音转写（需下方 ASR 配置）。解析结果为带时间戳的文稿，可生成「陪读剧情」或进「自由提问」模式。</p>
+    <div class="field"><span class="label">工具链状态（yt-dlp 抓取字幕/音频，ffmpeg 提取音轨）</span>
+      <div id="vid-probe" class="hint">检测中…</div>
+      <div class="row" style="margin-top:6px">
+        <button class="btn btn-sm" id="vid-import-ytdlp">📥 导入 yt-dlp…</button>
+        <button class="btn btn-sm" id="vid-import-ffmpeg">📥 导入 ffmpeg…</button>
+        <button class="btn btn-sm" id="vid-reprobe">🔄 重新检测</button>
+      </div>
+      <p class="hint">「导入」从本机选择已有的 exe（例如 Paper2Galgame 安装目录 resources\\app.asar.unpacked\\bin 里的 yt-dlp.exe / ffmpeg.exe），复制进 deskpal 数据目录的 bin 文件夹；也可手动填路径或安装到系统 PATH。</p></div>
+    <div class="field"><span class="label">yt-dlp 路径（留空 = 自动：数据目录/bin → 系统 PATH）</span>
+      <input type="text" id="vid-ytdlp-path" value="${esc((settings.video || {}).ytDlpPath || '')}" placeholder="D:\\tools\\yt-dlp.exe" style="max-width:420px"></div>
+    <div class="field"><span class="label">ffmpeg 路径（留空 = 自动）</span>
+      <input type="text" id="vid-ffmpeg-path" value="${esc((settings.video || {}).ffmpegPath || '')}" placeholder="D:\\tools\\ffmpeg.exe" style="max-width:420px"></div>
+    <div class="field"><span class="label">语音识别（ASR）接口地址——OpenAI 兼容 /audio/transcriptions；留空 = 跟随上方 LLM 接口地址</span>
+      <input type="text" id="vid-asr-url" value="${esc((api.asr || {}).baseUrl || '')}" placeholder="如 https://api.siliconflow.cn/v1 或 https://open.bigmodel.cn/api/paas/v4" style="max-width:420px"></div>
+    <div class="field"><span class="label">ASR 模型名（常见：whisper-1 / FunAudioLLM/SenseVoiceSmall / glm-asr）</span>
+      <input type="text" id="vid-asr-model" value="${esc((api.asr || {}).model || '')}" placeholder="whisper-1" style="max-width:420px"></div>
+    <div class="field"><span class="label">ASR API Key（${(api.asr || {}).hasKey ? '已配置 ●' : '未配置'}；留空 = 跟随主 API Key）</span>
+      <input type="password" id="vid-asr-key" placeholder="${(api.asr || {}).hasKey ? '留空则不修改' : '与主 Key 相同则不用填'}" autocomplete="new-password" style="max-width:420px"></div>
+    <div class="row">
+      <button class="btn btn-primary" id="vid-save">保存视频解析配置</button>
+      <span class="hint" id="vid-saved"></span>
+    </div>
+    <p class="hint">没有字幕的视频才需要 ASR（B站/YouTube 大多有自动字幕，可免转写）。智谱 GLM 用户：地址填完整端点 https://open.bigmodel.cn/api/paas/v4/audio/asr、模型填 glm-asr；SiliconFlow 填 https://api.siliconflow.cn/v1（自动补 /audio/transcriptions）+ FunAudioLLM/SenseVoiceSmall。</p>
   </div>
   <div class="set-section">
     <h3 style="margin-top:0">🤖 Agent 执行（实验功能）</h3>
@@ -529,11 +567,35 @@ async function renderApi() {
   </div>`;
 
   // ---- 模型列表自动获取（类似 CC Switch：填好地址 + Key → 拉取 /models → 下拉选择） ----
+  // 自绘下拉而非原生 <datalist>：后者在输入框已有值时只显示「包含当前文本」的候选项
+  // （如存量 glm-4 只剩 4 个 glm-4.x 可见），接口返回 11 个也只看得到 4 个，且无法关闭该过滤。
   const endpointInput = body.querySelector('#a-endpoint');
   const modelInput = body.querySelector('#a-model');
-  const modelList = body.querySelector('#a-model-list');
+  const modelMenu = body.querySelector('#a-model-menu');
   const modelStatus = body.querySelector('#a-model-status');
+  let modelOptions = []; // 拉取到的完整模型列表
   let fetchingModels = false;
+  function hideModelMenu() { modelMenu.hidden = true; modelMenu.innerHTML = ''; }
+  function showModelMenu() {
+    if (!modelOptions.length) { hideModelMenu(); return; }
+    const f = modelInput.value.trim().toLowerCase();
+    const items = f ? modelOptions.filter(m => m.toLowerCase().includes(f)) : modelOptions;
+    modelMenu.innerHTML = items.length
+      ? items.map(m => `<div class="model-item" data-m="${esc(m)}">${esc(m)}</div>`).join('')
+      : '<div class="model-item" style="color:var(--dp-text-muted);cursor:default">无匹配，可手动填写</div>';
+    modelMenu.hidden = false;
+  }
+  modelMenu.addEventListener('mousedown', (e) => {
+    const item = e.target.closest('.model-item');
+    if (!item || !item.dataset.m) return;
+    e.preventDefault(); // 阻止输入框失焦（blur 钩子会收起菜单），选中后再主动收起
+    modelInput.value = item.dataset.m;
+    hideModelMenu();
+    modelInput.dispatchEvent(new Event('change')); // 触发联动（如 vision 实时检测）
+  });
+  modelInput.addEventListener('focus', showModelMenu);          // 聚焦即摊开全量列表
+  modelInput.addEventListener('input', showModelMenu);          // 输入时按「包含」筛选，清空恢复全量
+  modelInput.addEventListener('blur', () => setTimeout(hideModelMenu, 120));
   async function fetchModels({ quiet = false } = {}) {
     const endpoint = endpointInput.value.trim();
     if (!endpoint) { modelStatus.textContent = ''; return; }
@@ -544,13 +606,15 @@ async function renderApi() {
     try {
       const key = body.querySelector('#a-key').value.trim(); // 未保存的新 Key 也可直接用
       const r = await dp.llmListModels({ endpoint, key });
-      modelList.innerHTML = (r.models || []).map(m => `<option value="${esc(m)}"></option>`).join('');
-      modelStatus.textContent = r.models.length
-        ? `✓ 已获取 ${r.models.length} 个模型，点击「模型名」输入框即可选择`
+      modelOptions = r.models || [];
+      modelStatus.textContent = modelOptions.length
+        ? `✓ 已获取 ${modelOptions.length} 个模型，点击「模型名」输入框即可从完整列表选择`
         : '接口未返回任何模型，可手动填写模型名';
-      modelStatus.style.color = r.models.length ? 'var(--dp-ok)' : '';
+      modelStatus.style.color = modelOptions.length ? 'var(--dp-ok)' : '';
+      if (modelOptions.length) showModelMenu(); // 拉完直接摊开全量列表
     } catch (err) {
-      modelList.innerHTML = '';
+      modelOptions = [];
+      hideModelMenu();
       modelStatus.textContent = (quiet ? '' : '✗ ') + `获取模型列表失败：${errText(err)}（仍可手动填写模型名）`;
       modelStatus.style.color = '';
     } finally {
@@ -559,6 +623,24 @@ async function renderApi() {
   }
   endpointInput.addEventListener('change', () => fetchModels({ quiet: true })); // 地址填完失焦自动调取
   body.querySelector('#a-model-fetch').addEventListener('click', () => fetchModels());
+
+  // ---- 图像识别（多模态）实时检测提示：随模型名输入变化，主进程词表判定 ----
+  const visionSel = body.querySelector('#a-vision');
+  const visionHint = body.querySelector('#a-vision-hint');
+  async function updVisionHint() {
+    if (!visionHint) return;
+    const m = modelInput.value.trim();
+    try {
+      const r = await dp.llmVisionDetect({ model: m });
+      if (!m) { visionHint.textContent = '填好模型名后自动检测是否支持图像输入'; visionHint.style.color = ''; return; }
+      visionHint.textContent = r.detected
+        ? `✓ 「${m}」识别为多模态模型，保持「自动检测」即可`
+        : `「${m}」未识别为多模态——若该模型确实支持图像输入，请选「强制开启」`;
+      visionHint.style.color = r.detected ? 'var(--dp-ok)' : '';
+    } catch (_) { visionHint.textContent = ''; }
+  }
+  modelInput.addEventListener('change', updVisionHint);
+  updVisionHint();
 
   body.querySelector('#a-preset').addEventListener('change', (e) => {
     const p = PRESETS.find(x => x.endpoint === e.target.value);
@@ -577,10 +659,12 @@ async function renderApi() {
     for (const k of ['temperature', 'maxTokens', 'topP', 'frequencyPenalty', 'presencePenalty']) {
       params[k] = +body.querySelector('#a-' + k).value;
     }
+    const visionSel = body.querySelector('#a-vision');
     const patch = {
       endpoint: endpointInput.value.trim(),
       model: modelInput.value.trim(),
       params,
+      vision: visionSel.value === 'on' ? true : visionSel.value === 'off' ? false : 'auto',
     };
     const key = body.querySelector('#a-key').value.trim();
     try {
@@ -604,6 +688,56 @@ async function renderApi() {
       el.textContent = r.ok ? `✓ 连接成功，延迟 ${r.latencyMs}ms` : `✗ ${r.error}`;
       el.style.color = r.ok ? 'var(--dp-ok)' : 'var(--dp-danger)';
     }
+  });
+
+  // ---- 视频解析区块：工具检测 / 导入 / ASR 配置 ----
+  const probeEl = body.querySelector('#vid-probe');
+  async function probeVideoTools() {
+    if (!probeEl) return;
+    probeEl.textContent = '检测中…';
+    try {
+      const rt = await dp.videoProbe();
+      const fmt = (b, name) => b.found
+        ? `✓ ${name}：${b.path}${b.version ? '（' + b.version + '）' : ''}`
+        : `✗ ${name}：未找到（导入、填路径或装到 PATH）`;
+      probeEl.innerHTML = `${fmt(rt.ytDlp, 'yt-dlp')}<br>${fmt(rt.ffmpeg, 'ffmpeg')}`;
+    } catch (err) { probeEl.textContent = '检测失败：' + errText(err); }
+  }
+  probeVideoTools();
+  body.querySelector('#vid-reprobe').addEventListener('click', probeVideoTools);
+  for (const [btnId, kind] of [['#vid-import-ytdlp', 'ytDlp'], ['#vid-import-ffmpeg', 'ffmpeg']]) {
+    body.querySelector(btnId).addEventListener('click', async () => {
+      const p = await dp.pickFile({ title: kind === 'ytDlp' ? '选择 yt-dlp 可执行文件' : '选择 ffmpeg 可执行文件', filters: [{ name: '可执行文件', extensions: ['exe'] }] });
+      if (!p) return;
+      try {
+        await dp.videoImportBinary(kind, p);
+        toast('已导入到数据目录 bin 文件夹', 'ok');
+        probeVideoTools();
+      } catch (err) { toast(errText(err), 'error'); }
+    });
+  }
+  body.querySelector('#vid-save').addEventListener('click', async () => {
+    const saved = body.querySelector('#vid-saved');
+    try {
+      await dp.storeSet('settings', {
+        video: {
+          ytDlpPath: body.querySelector('#vid-ytdlp-path').value.trim(),
+          ffmpegPath: body.querySelector('#vid-ffmpeg-path').value.trim(),
+        },
+      });
+      await dp.storeSet('api', {
+        asr: {
+          baseUrl: body.querySelector('#vid-asr-url').value.trim(),
+          model: body.querySelector('#vid-asr-model').value.trim(),
+        },
+      });
+      const key = body.querySelector('#vid-asr-key').value.trim();
+      if (key) await dp.videoSaveAsrKey(key);
+      saved.textContent = '✓ 已保存';
+      saved.style.color = 'var(--dp-ok)';
+      setTimeout(() => { if (saved) saved.textContent = ''; }, 1800);
+      probeVideoTools();
+    } catch (err) { toast(errText(err), 'error'); }
   });
 
   // ---- Agent 执行区块（即时保存）----

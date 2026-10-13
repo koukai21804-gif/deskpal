@@ -1,6 +1,7 @@
 // 全部 prompt 模板（函数即模板，中文）。字段为空自动省略对应行。
 const dayjs = require('dayjs');
 const store = require('./store');
+const llm = require('./llm');
 const runs = require('./agent/runs');
 const canon = require('./canon');
 const memorySvc = require('./memory');
@@ -38,6 +39,28 @@ function memoriesBlock() {
   if (core.length) parts.push(`【长期记忆 · core（身份级认知，长期有效）】\n${core.map(m => `- ${m.content}`).join('\n')}`);
   if (working.length) parts.push(`【近期记忆 · working（滚动工作记忆，最新在前）】\n${working.map(m => `- ${m.content}`).join('\n')}`);
   return '\n' + parts.join('\n\n');
+}
+
+// NOREKI-Mail 信箱认知（v1.5）：她「知道信箱、知道有未读、记得发过什么」的字面实现——
+// 全部从状态账本（显式文件）读取，LLM 不记账。账本由 services/noreki-link.js 维护。
+// 空信箱只注入一行通道存在性说明（保留认知锚点，成本一行）。
+function mailboxBlock() {
+  try {
+    const link = require('./noreki-link');
+    const s = link.mailboxSummary();
+    const lines = [];
+    if (s.unreadCount > 0) {
+      const items = s.unread.map(m => `  - [${m.kind}] ${m.subject}（${m.sentAt}）`).join('\n');
+      lines.push(`【NOREKI-Mail 信箱】你有 ${s.unreadCount} 封未读来信（来自 ${link.PEER_ID}，即你的女儿克莉奥）：\n${items}\n前辈在聊天窗点「查看信件」后你才能读到全文；在那之前不要假装已读过内容，可以自然地提及有待读的信。`);
+    } else {
+      lines.push(`【NOREKI-Mail 信箱】当前无未读来信。`);
+    }
+    if (s.recentSent.length) {
+      lines.push(`你最近发出的信：\n${s.recentSent.map(t => '  - ' + t).join('\n')}`);
+    }
+    lines.push(`（信箱机制：克莉奥的信放在信箱里，你随时可被问起；回复不必主动展开信件全文。）`);
+    return '\n' + lines.join('\n');
+  } catch (_) { return ''; }
 }
 
 // 会话卡（v0.5 多会话）：让角色知道自己在哪个会话里——主对话=日常扮演常驻；
@@ -157,6 +180,11 @@ function agentSection() {
     full: `\n当前权限模式：完全编辑——write_file 可写入本机大部分目录（Windows、Program Files 等核心系统目录、其他用户目录、敏感文件除外）；每次写入前用户会在权限卡上逐次批准，被拒后调整方案，不要重复尝试同一目标。`,
   }[mode];
   const writeTool = mode === 'read' ? '' : '\n- write_file(path, content, reason)：写文件（reason 必填，≤60字，向用户说明写入原因）。大文件必须分段写：先写第一段，再用 write_file(path, content, reason, append:"true") 逐段追加，每段 ≤3000 字';
+  // 图像识别（多模态）：仅当前模型具备图像输入能力时注入——工具 schema 同步由 loop 过滤，
+  // 提示词与实际下发面必须一致，否则模型会调用不存在的工具
+  const visionTool = llm.isVisionCapable()
+    ? '\n- read_image(path)：读取图片文件（png/jpg/jpeg/gif/webp/bmp），图像会进入你的视觉上下文。识别、描述、提取截图/照片/扫描件/图表中的内容用它；文本文件用 read_file；超过 8MB 的图会被拒绝'
+    : '';
   // 联网检索段（spec §7.3）：开启时注入完整纪律；未开启注入一行——工具常下发，
   // 模型须知道「用户明确要求查资料时可以调用」（否则聊天内授权流无从触发）
   const ws = ((store.get('settings').agent || {}).webSearch) || {};
@@ -178,7 +206,7 @@ function agentSection() {
 
 【任务执行模式（戏外工作轮适用）】
 你可以调用以下工具实际执行任务：
-- read_file(path, offset?, length?)：读取文本文件（敏感路径会被拒绝）。大文件分段返回（默认每次 16000 字符）：未读完时返回体末尾会给出续读 offset，必须带 offset 逐段读完再回答/总结，不要只凭第一段下结论
+- read_file(path, offset?, length?)：读取文本文件（敏感路径会被拒绝）。大文件分段返回（默认每次 16000 字符）：未读完时返回体末尾会给出续读 offset，必须带 offset 逐段读完再回答/总结，不要只凭第一段下结论${visionTool}
 - list_dir(path)：列出目录内容${writeTool}${searchTool}
 - save_memory(content, importance?, type?)：把信息真实写入你的长期记忆（用户可在记忆面板查到）。用户说「记住…/写进你的长期记忆/记一下」时必须实际调用它，只在正文里说「记下了」不算数；你自己固化关于用户的长期性结论（核心偏好/重要事实/重要约定）时也应主动调用。宁缺毋滥：≤60字/条，只存长期有效的关键信息，不存闲聊细节
 - add_reminder(title, start, repeat?, kind?)：创建日程提醒，写入日程页（到点弹提醒卡+系统通知）。用户要求「设个提醒/每天提醒我…/加个日程」时必须实际调用本工具，只在正文里说「设好了」不算数。start=首次提醒时间（"YYYY-MM-DD HH:mm"，24小时制；当日时刻已过会自动顺延到下一次）；repeat：daily=每天/weekdays=仅工作日/weekly=每周，缺省不重复；创建后把返回体里的下次提醒时间如实告知用户，修改/删除提醒则引导用户去日程页${dirLine}${modeLine}
@@ -229,6 +257,8 @@ ${section('形象与风格', [
 与你对话的人是${user.name || '主人'}。${user.description || ''}
 ${profileBlock()}
 ${memoriesBlock()}
+${readingDigestBlock()}
+${mailboxBlock()}
 
 【交互规则】
 - 始终用${pet.language || '中文'}回复
@@ -445,6 +475,61 @@ ${master}的问题：${question}
 - 引用原文时标注 [C1] 这样的编号`;
 }
 
+// ================= 陪读：自由提问模式（通读 → 笔记 → 静候提问） =================
+// 通读步进：滚动笔记——每读一段就输出「更新后的完整笔记」（消化旧笔记+新内容，不追加流水账）
+function readingDigestStepPrompt(pet, bookTitle, prevNotes, chunkText, index, total) {
+  return `你是桌面宠物${pet.name}，正在为${bookTitle === '' ? '这份资料' : '《' + bookTitle + '》'}的自由提问环节做通读准备（第 ${index}/${total} 段）。
+只输出笔记正文（纯文本，不要标题、不要前后缀、不要解释），这是你要记住的完整学习笔记。
+
+${prevNotes ? `当前已有笔记（在此基础上消化合并更新）：\n"""\n${prevNotes}\n"""` : '（这是第一段，从零开始记笔记）'}
+
+新读到的原文段落：
+"""
+${chunkText}
+"""
+
+笔记要求（总长 ≤2500 字）：
+- 结构：主题与背景 / 核心概念或情节（术语附一句话解释）/ 关键论证或数据 / 章节脉络
+- 忠实原文，禁止编造；保留重要数字、人名、结论
+- 消化优先于追加：同主题合并成一条，删去被新内容覆盖的旧描述
+- 这是给「之后回答读者任意提问」用的底稿，按信息密度取舍，不追求文采`;
+}
+
+// 自由提问模式的问答：基于通读笔记 + 原文节选，安静等待、有问必答
+function readingFreeQAPrompt(pet, master, question, notes, excerpts) {
+  return `你是桌面宠物${pet.name}。${master}上传了一份资料，你已完整通读并在安静等待提问。现在${master}问了一个问题，请基于你的通读笔记和原文节选回答。
+说话风格：${pet.speechStyle || '活泼口语'}
+
+你的通读笔记：
+"""
+${notes}
+"""
+
+相关原文节选（编号引用）：
+${excerpts.map((x, i) => `[C${i + 1}] ${x}`).join('\n---\n')}
+
+${master}的问题：${question}
+
+要求：
+- 直接回答问题（≤400字），可用列表/小标题组织；结尾附 [情绪:XX] 标签（平常/开心/惊讶/愤怒/思考/悲伤）
+- 忠实原文；笔记与节选都不足以回答时如实说明资料中没有涉及，不要编造
+- 引用原文标注 [C1] 编号；扩展解释要注明「这是我补充的背景，不在原文里」
+- ${master}问什么答什么，不反问闲聊；答完即止`;
+}
+
+// ================= 陪读足迹（跨功能记忆共享：角色扮演知道用户最近在读什么） =================
+// 只注入概要（书名/形式/进度/日期），不注入陪读正文与问答内容——控制上下文占用。
+// 数据来自 reading.listDigest()；懒加载 require 避免 prompts ↔ reading 循环依赖的加载期求值。
+function readingDigestBlock() {
+  try {
+    const items = require('./reading').listDigest();
+    if (!items.length) return '';
+    const lines = items.map(it => `- ${it}`).join('\n');
+    return `\n【陪读足迹（应用层记录——你与用户最近共读/共学的资料概要，正文与问答内容不在其中）】\n${lines}
+（用户在陪读窗与你读这些资料；日常聊天可自然提起、关心学习进度，但不要逐字背诵本清单，也不要假装记得陪读时的完整内容——需要细节就问用户。）`;
+  } catch (_) { return ''; }
+}
+
 // ================= 时间管理：AI 报告 =================
 function timeReportPrompt(pet, master, statsText) {
   return `你是桌面宠物${pet.name}，用你的人设口吻（${pet.personality || '元气、关心主人'}）为${master}生成一份今日/本周时间使用报告。
@@ -518,5 +603,6 @@ module.exports = {
   MEMORY_DISCIPLINE, isDisciplineCommand,
   scheduleParsePrompt, scheduleDecomposePrompt,
   readingOutlinePrompt, readingFlowPrompt, readingQAPrompt,
+  readingDigestStepPrompt, readingFreeQAPrompt, readingDigestBlock,
   timeReportPrompt,
 };

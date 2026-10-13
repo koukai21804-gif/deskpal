@@ -303,6 +303,45 @@ async function streamChat({ messages, onChunk, overrides = {}, reqId = newReqId(
 // 工具类补全不需要推理，对 deepseek 显式关闭；其他服务商不支持该参数则不加，避免 400。
 function isDeepseek(model) { return /deepseek/i.test(String(model || '')); }
 
+// ---- 多模态（vision）能力判定（read_image 工具的下发闸）----
+// OpenAI 兼容网关不暴露能力位，按「用户显式三态 + 模型名启发式」判定：
+// api.vision = true（强制开启）/ false（强制关闭）/ 'auto'（默认，按词表匹配）。
+// 词表宁可漏配（用户可强制开启），不可把纯文本模型误判成多模态——误判的代价是
+// 向不支持图像的接口发 image_url，整个请求 400。
+// 词表时点：2026-10-11（用户校准）。各家口径：
+//   OpenAI   gpt-4o/4.1/4-turbo、gpt-5.x（5.6 Sol）、gpt-6+（6 Astra / 6.1 Sol）、o3–o9
+//   Anthropic claude 全系裸匹配（3 起全系视觉；2026 在售 Opus 5.5 / Fable 5.1，命名含系列词难逐个枚举）
+//   Google   gemini 全系（3.5/3.8 Flash、4 Argon）
+//   智谱     glm-4v / 4.xV / glm-5+（5.3-Flash）；glm-4 纯文本不命中
+//   DeepSeek V4 起多模态（V4.1-Flash）；V3/R1/chat 纯文本不命中；deepseek-vl 开源视觉系照收
+//   阿里     qwen 数字版本 + vl/omni/max 后缀（2.5-vl、3.8-max）、qvq；旧纯文本 qwen-max/plus 不命中
+//   字节     doubao seed 系（1.6 起视觉）/ 2.x 全系（2.0/2.1）/ vision 变体；doubao-1.5-pro 纯文本不命中
+//   xAI      grok-2+（4.7）；grok-1 远古纯文本不命中
+//   月之暗面  kimi-k3+（k3）；kimi-k2 纯文本不命中
+//   MiniMax  H 系（H3）；M 系纯文本不命中
+//   其他     Muse Spark；通用词素 vision/vlm/omni（nemotron-3-nano-omni 经此命中）；internvl/llava/pixtral
+const VISION_MODEL_RE = new RegExp([
+  'gpt-4\\.1|gpt-4o|gpt-4-turbo|gpt-[5-9]|chatgpt-4o|(^|[^a-z0-9])o[3-9]([^a-z0-9]|$)', // OpenAI
+  'claude',                     // Anthropic（3 起全系视觉，裸厂商匹配）
+  'gemini',                     // Google
+  'glm-4v|glm-4\\.\\dv|glm-[5-9]', // 智谱
+  'deepseek-?v[4-9]|deepseek-vl|deepseek[^a-z]*vision', // DeepSeek（V4 起多模态）
+  'qwen\\d[\\d.]*-?(vl|omni|max)|qwen[\\d.]*-?(vl|omni)|qvq', // 阿里
+  'doubao[^a-z]*vision|doubao-?seed|doubao-?[2-9]', // 字节豆包
+  'grok-[2-9]',                 // xAI
+  'kimi-k[3-9]',                // 月之暗面
+  'minimax-?h|muse[^a-z]*spark', // MiniMax H 系 / Muse Spark
+  '(^|[^a-z])(vision|vlm|omni)([^a-z]|$)', // 通用词素（nemotron-…-omni 等经此命中）
+  'internvl|llava|pixtral',     // 开源视觉系
+].join('|'), 'i');
+
+function isVisionCapable() {
+  const api = store.get('api') || {};
+  if (api.vision === true) return true;
+  if (api.vision === false) return false;
+  return VISION_MODEL_RE.test(String(api.model || ''));
+}
+
 // 非流式：记忆提取 / 日程解析 / 大纲等内部任务
 // opts.tools：附工具定义（Agent 非流式决策轮），返回 {content, toolCalls, finishReason}
 // opts.onUsage(usage)：上游自报用量回调（锚点法计量，P0-2）
@@ -391,4 +430,4 @@ function friendlyError(msg) {
 // stream+tools 是否已被 400 判定不可用（决策轮据此降级非流式）
 function isToolsStreamBroken() { return !!store.get('api').toolsStreamBroken; }
 
-module.exports = { streamChat, genericCompletion, testConnection, listModels, stop, newReqId, getConfig, saveKey, assertConfigured, normalizeEndpoint, isToolsStreamBroken, isDeepseek, isContextOverflow, createStreamWatchdog, STREAM_LIMITS, RUNAWAY_FACTOR };
+module.exports = { streamChat, genericCompletion, testConnection, listModels, stop, newReqId, getConfig, saveKey, assertConfigured, normalizeEndpoint, isToolsStreamBroken, isDeepseek, isVisionCapable, VISION_MODEL_RE, isContextOverflow, createStreamWatchdog, STREAM_LIMITS, RUNAWAY_FACTOR };

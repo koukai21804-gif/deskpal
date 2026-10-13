@@ -51,6 +51,22 @@ if (!gotLock) {
     createTray();
     windows.openWindow('pet');
 
+    // NOREKI-Mail：跨实体信件通道（titor@deskpal ⇄ clio@hermes），协议见 D:/NorekiLink/PROTOCOL.md
+    try {
+      const linkInit = require('./services/noreki-link').init(dataDir);
+      if (linkInit.ok) logger.info('[noreki-link] 通道就绪（titor@deskpal）');
+      else logger.warn('[noreki-link] 未就绪: ' + linkInit.reason);
+    } catch (e) { logger.error('[noreki-link] 初始化失败: ' + e.message); }
+
+    // 开发自检（对齐 DESKPAL_SMOKE 模式）：DESKPAL_NOREKI_SEND=<正文> → 发一封测试信后退出
+    if (process.env.DESKPAL_NOREKI_SEND) {
+      try {
+        const r = require('./services/noreki-link').send('note', process.env.DESKPAL_NOREKI_SEND);
+        logger.info('[noreki-link] 自检信已发: ' + JSON.stringify(r));
+      } catch (e) { logger.error('[noreki-link] 自检发送失败: ' + e.message); }
+      setTimeout(() => app.quit(), 1500);
+    }
+
     // ★H agent run 台账恢复：上次未收尾的 run 只标 interrupted，不自动重跑
     try {
       const recovered = require('./services/agent/runs').markInterruptedOnBoot();

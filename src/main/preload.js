@@ -9,9 +9,11 @@ const PUSH_CHANNELS = [
   'agent:step', 'agent:permission', 'agent:artifact', 'agent:done',
   'search:ledger-changed',
   'canon:incident',
-  'reader:progress', 'reader:qa-chunk', 'reader:qa-done',
+  'noreki:mail',
+  'reader:progress', 'reader:qa-chunk', 'reader:qa-done', 'reader:video-progress',
   'report:chunk', 'report:done',
   'schedule:remind', 'schedule:catchup', 'schedule:changed', 'schedule:prefill',
+  'ui:open-panel',
   'activity:idle-back', 'time:changed',
 ];
 
@@ -69,6 +71,7 @@ contextBridge.exposeInMainWorld('deskpal', {
   // LLM / 聊天
   llmTest: () => invoke('llm:test', {}),
   llmListModels: (opts) => invoke('llm:list-models', opts),
+  llmVisionDetect: (opts) => invoke('llm:vision-detect', opts || {}),
   chatSend: (tab, text) => invoke('chat:send', { tab, text }),
   chatStop: (reqId) => invoke('chat:stop', { reqId }),
   chatHistory: (tab) => invoke('chat:history', { tab }),
@@ -81,6 +84,14 @@ contextBridge.exposeInMainWorld('deskpal', {
   chatSessionSwitch: (id) => invoke('chat:session-switch', { id }),
   chatSessionRename: (opts) => invoke('chat:session-rename', opts),
   chatSessionDelete: (id) => invoke('chat:session-delete', { id }),
+
+  // NOREKI-Mail（v0.5.1：跨实体信件，与 Hermes 侧 clio 通信）
+  norekiSend: (kind, body, ref = '') => invoke('noreki:send', { kind, body, ref }),
+  norekiFetch: () => invoke('noreki:fetch', {}),
+  norekiStatus: () => invoke('noreki:status', {}),
+  // v1.5：查看信件（信入聊天史）+ 信箱状态（未读徽标）
+  norekiRead: () => invoke('noreki:read', {}),
+  norekiMailbox: () => invoke('noreki:mailbox', {}),
 
   // 长期记忆管理（/deep memory forcing 面板；不入聊天历史）
   memoryList: () => invoke('memory:list', {}),
@@ -109,6 +120,14 @@ contextBridge.exposeInMainWorld('deskpal', {
   searchTest: (opts) => invoke('search:test', opts || {}),
   searchProviders: () => invoke('search:providers', {}),
 
+  // Token 看板（开发版 /tokens 面板）
+  tokenBoardQuery: () => invoke('tokenboard:query', {}),
+  tokenBoardConfig: () => invoke('tokenboard:config-get', {}),
+  tokenBoardConfigSave: (doc) => invoke('tokenboard:config-save', { doc }),
+
+  // 面板直达（宠物菜单 → 本窗口面板；boot 时取一次 pending 防推送丢失）
+  takePendingPanel: () => invoke('ui:take-pending-panel', {}),
+
   // 启动器
   launcherMatch: (text) => invoke('launcher:match', { text }),
   launcherRun: (id) => invoke('launcher:run', { id }),
@@ -130,14 +149,21 @@ contextBridge.exposeInMainWorld('deskpal', {
 
   // 陪读
   readerUpload: (path) => invoke('reader:upload', { path }),
+  readerUploadVideo: (opts) => invoke('reader:upload-video', opts || {}),
+  readerVideoCancel: () => invoke('reader:video-cancel', {}),
   readerList: () => invoke('reader:list', {}),
   readerLoad: (bookId) => invoke('reader:load', { bookId }),
-  readerGenerate: (bookId) => invoke('reader:generate', { bookId }),
+  readerGenerate: (bookId, mode) => invoke('reader:generate', { bookId, mode }),
   readerCancelGenerate: (bookId) => invoke('reader:cancel-generate', { bookId }),
   readerSave: (bookId, patch) => invoke('reader:save', { bookId, patch }),
   readerDelete: (bookId) => invoke('reader:delete', { bookId }),
   readerAsk: (bookId, question) => invoke('reader:ask', { bookId, question }),
   readerQaStop: (reqId) => invoke('reader:qa-stop', { reqId }),
+
+  // 视频解析工具链（设置页）
+  videoProbe: () => invoke('video:probe', {}),
+  videoImportBinary: (kind, path) => invoke('video:import-binary', { kind, path }),
+  videoSaveAsrKey: (key) => invoke('video:save-asr-key', { key }),
 
   // 时间管理
   timeStats: (range) => invoke('time:stats', { range }),

@@ -422,6 +422,35 @@ function bumpUserCount(tab) {
   userProfile.bump(); // 开发版：身份档案漂移计数（只认 roleplay）
 }
 
+// NOREKI-Mail 查看来信（v1.5）：前辈点「查看信件」→ 未读信文以系统注入消息入史。
+// 入史形态：role=user + mailInject 标——下轮 buildMessages 自然喂给 LLM（她认知里读到全文），
+// 渲染层按 mailInject 标画信纸卡（区别于普通用户消息）。不 bump 计数（不是前辈说的话，
+// 不触发记忆提取/档案漂移——信是克莉奥写的，不是用户写的）。
+async function deliverMailToHistory(tab = 'roleplay') {
+  const norekiLink = require('./noreki-link');
+  const mails = norekiLink.readUnread();
+  if (!mails.length) return { delivered: 0, unread: 0 };
+  const h = getHistory(tab);
+  for (const m of mails) {
+    h.push({
+      id: 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+      role: 'user',
+      content: `[来信 from:${m.from}｜kind:${m.kind}｜id:${m.id}｜sentAt:${m.sentAt}]\n${m.body}`,
+      mailInject: { id: m.id, from: m.from, kind: m.kind, sentAt: m.sentAt },
+      at: dayjs().format(),
+    });
+  }
+  saveHistory(tab, h);
+  return { delivered: mails.length, unread: norekiLink.unreadCount() };
+}
+
+// 信箱状态（渲染层徽标/查看按钮用）
+function mailboxStatus() {
+  const norekiLink = require('./noreki-link');
+  const s = norekiLink.mailboxSummary();
+  return { ...s, peer: norekiLink.PEER_ID, self: norekiLink.SELF_ID };
+}
+
 async function exportChat(tab) {
   const msgs = getHistory(tab);
   if (!msgs.length) throw new Error('当前会话没有消息可导出');
@@ -443,6 +472,6 @@ async function exportChat(tab) {
 
 module.exports = {
   send, stop: llm.stop, getHistory, saveHistory, bumpUserCount, exportChat, buildMessages,
-  memoryTick, flushMemory,
+  memoryTick, flushMemory, deliverMailToHistory, mailboxStatus,
   listSessions, newSession, switchSession, renameSession, deleteSession,
 };

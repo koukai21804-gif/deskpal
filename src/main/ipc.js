@@ -1,6 +1,7 @@
 // 全部 IPC 路由。统一封装：成功返回数据；失败抛中文 userMsg（preload 捕获包装）
 const { ipcMain, dialog, shell, Menu, app, screen } = require('electron');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const logger = require('./logger');
 const store = require('./services/store');
@@ -20,6 +21,7 @@ const scheduleExcel = require('./services/schedule/excel');
 const memory = require('./services/memory');
 const userProfile = require('./services/user-profile');
 const canon = require('./services/canon');
+const norekiLink = require('./services/noreki-link');
 const searchLedger = require('./services/agent/search-ledger');
 const netSearch = require('./services/agent/net-search');
 
@@ -145,7 +147,9 @@ function registerIpc() {
   handle('store:get', ({ name }) => {
     if (name === 'api') {
       const api = store.get('api');
-      return { ...api, apiKeyEnc: undefined, hasKey: !!api.apiKeyEnc };
+      // R4：密文不进渲染层（主 Key 与 ASR Key 同等待遇）
+      const asr = api.asr || {};
+      return { ...api, apiKeyEnc: undefined, hasKey: !!api.apiKeyEnc, asr: { ...asr, keyEnc: undefined, hasKey: !!asr.keyEnc } };
     }
     if (name === 'search') {
       const s = store.get('search');
@@ -236,6 +240,12 @@ function registerIpc() {
   handle('llm:test', () => llm.testConnection());
   // 模型列表（设置页：填好地址+Key 后自动调取，供下拉选择）
   handle('llm:list-models', (opts) => llm.listModels(opts || {}));
+  // 图像识别（多模态）检测：设置页/聊天窗提示用——detected=模型名词表命中；
+  // capable=按已保存三态（api.vision）与模型名综合判定（可传 model 覆盖，供表单未保存时预览）
+  handle('llm:vision-detect', ({ model } = {}) => ({
+    detected: llm.VISION_MODEL_RE.test(String(model != null ? model : (llm.getConfig() || {}).model || '')),
+    capable: llm.isVisionCapable(),
+  }));
   handle('chat:send', async ({ tab, text }) => {
     if (!['roleplay', 'quick'].includes(tab)) throw new Error('未知聊天标签');
     if (!String(text || '').trim()) throw new Error('消息不能为空');
@@ -245,6 +255,7 @@ function registerIpc() {
       if (userProfile.isProfileCommand(text)) return { profileCommand: true };
       if (searchLedger.isLedgerCommand(text)) return { ledgerCommand: true };
       if (require('./services/prompts').isDisciplineCommand(text)) return { disciplineCommand: true };
+      if (/^\s*\/\s*tokens?\s*$/i.test(text)) return { tokenBoardCommand: true };
     }
     chat.bumpUserCount(tab);
     return chat.send(tab, String(text).trim());
@@ -266,6 +277,23 @@ function registerIpc() {
   handle('chat:session-switch', async ({ id }) => chat.switchSession(String(id || '')));
   handle('chat:session-rename', ({ id, name, goal }) => chat.renameSession(String(id || ''), { name, goal }));
   handle('chat:session-delete', ({ id }) => chat.deleteSession(String(id || '')));
+
+  // ---------- NOREKI-Mail（v0.5.1：与 Hermes 侧 clio 的跨实体信件通道） ----------
+  // 身份在签名层：收到的信经 HMAC 验签才入史，发信人只会是注册身份 clio@hermes。
+  // 前辈的聊天走 chat:send，两条通路在数据层互斥，不可能混淆。
+  handle('noreki:send', ({ kind, body, ref } = {}) => {
+    const r = norekiLink.send(String(kind || 'note'), String(body || ''), String(ref || ''));
+    if (!r.ok) throw new Error('NorekiLink 未就绪：' + (r.error || 'unknown'));
+    return r;
+  });
+  handle('noreki:fetch', () => ({ delivered: norekiLink.fetchOnce() || 0 }));
+  handle('noreki:status', () => ({ root: norekiLink.LINK_ROOT, self: norekiLink.SELF_ID, peer: norekiLink.PEER_ID }));
+  // v1.5：查看信件（未读→已读→信文入聊天史）+ 信箱状态（徽标）
+  handle('noreki:read', async () => {
+    const r = await chat.deliverMailToHistory('roleplay');
+    return { ...r, mails: undefined };
+  });
+  handle('noreki:mailbox', () => chat.mailboxStatus());
 
   // ---------- 长期记忆管理（/deep memory forcing 面板；角色无感知，不入聊天历史） ----------
   // 列出前先强制补提取（有未提取消息时）：「打开面板检查」这个动作本身就收掉会话尾部缺口
@@ -312,6 +340,39 @@ function registerIpc() {
   handle('search:save-key', ({ key }) => netSearch.saveKey(String(key || '')));
   handle('search:test', (opts) => netSearch.testConnection(opts || {}));
   handle('search:providers', () => netSearch.listProviders());
+
+  // ---------- Token 看板（开发版 /tokens 面板：11 个 AI 工具 + deskpal 自身的本地用量聚合） ----------
+  handle('tokenboard:query', () => {
+    const tokenboard = require('./services/tokenboard');
+    const api = store.get('api');
+    return tokenboard.query({
+      home: os.homedir(),
+      dataDir: store.getDataDir(),
+      deskpalModel: (api && api.model) || null,
+      config: store.get('tokenBoard'),
+      hostname: os.hostname(),
+    });
+  });
+  handle('tokenboard:config-get', () => store.get('tokenBoard'));
+  // 整体替换（devices/limits 都是数组/映射语义，不能走深合并）
+  handle('tokenboard:config-save', ({ doc }) => {
+    const d = doc && typeof doc === 'object' ? doc : {};
+    const clean = { version: 1, devices: [], limits: {} };
+    for (const v of (Array.isArray(d.devices) ? d.devices : [])) {
+      if (v && v.label && v.path) clean.devices.push({ label: String(v.label).slice(0, 40), path: String(v.path).slice(0, 300) });
+    }
+    if (d.limits && typeof d.limits === 'object') {
+      for (const [tool, lim] of Object.entries(d.limits)) {
+        if (!lim || typeof lim !== 'object') continue;
+        clean.limits[tool] = {
+          hour5: Math.max(0, Math.round(+lim.hour5 || 0)),
+          daily: Math.max(0, Math.round(+lim.daily || 0)),
+          weekly: Math.max(0, Math.round(+lim.weekly || 0)),
+        };
+      }
+    }
+    return store.replace('tokenBoard', clean);
+  });
   // 账本增量刷新：面板开着时每次落账推送一次（spec §8）
   searchLedger.setChangeListener(() => {
     const win = windows.getWindow('chat');
@@ -350,14 +411,28 @@ function registerIpc() {
 
   // ---------- 陪读 ----------
   handle('reader:upload', ({ path: p }) => reading.upload(p));
+  // 视频源（v0.6）：url（B站/YouTube/MP4直链）或 path（本地视频文件）二选一；
+  // 进度经 reader:video-progress 推送，完成后返回 bookId 走既有生成流程
+  handle('reader:upload-video', ({ url, path: p }) => {
+    const u = String(url || '').trim(), f = String(p || '').trim();
+    if (!u && !f) throw new Error('请填写视频链接或选择本地视频文件');
+    return reading.uploadVideo({ url: u || null, filePath: f || null });
+  });
+  handle('reader:video-cancel', () => reading.cancelVideoUpload());
   handle('reader:list', () => reading.list());
   handle('reader:load', ({ bookId }) => reading.load(bookId));
-  handle('reader:generate', ({ bookId }) => reading.generate(bookId));
+  handle('reader:generate', ({ bookId, mode }) => reading.generate(bookId, { mode: mode === 'free' ? 'free' : 'flow' }));
   handle('reader:cancel-generate', ({ bookId }) => { reading.cancelGenerate(bookId); return { ok: true }; });
   handle('reader:save', ({ bookId, patch }) => reading.save(bookId, patch));
   handle('reader:delete', ({ bookId }) => { reading.del(bookId); return { ok: true }; });
   handle('reader:ask', ({ bookId, question }) => reading.ask(bookId, String(question).trim()));
   handle('reader:qa-stop', ({ reqId }) => { llm.stop(reqId); return { ok: true }; });
+
+  // ---------- 视频解析工具链（yt-dlp / ffmpeg / ASR 配置） ----------
+  const videoSvc = require('./services/video');
+  handle('video:probe', () => videoSvc.probeRuntime());
+  handle('video:import-binary', ({ kind, path: p }) => videoSvc.importBinary(kind, String(p || '')));
+  handle('video:save-asr-key', ({ key }) => { videoSvc.saveAsrKey(String(key || '')); return { ok: true }; });
 
   // ---------- 宠物设定档案（人设+形象绑定） ----------
   handle('pets:list', () => require('./services/pets').list());
@@ -415,8 +490,27 @@ function registerIpc() {
   });
   handle('agent:runs', ({ limit }) => require('./services/agent/runs').query({ limit: Math.min(100, Math.max(1, +limit || 20)) }));
 
+  // ---------- UI 面板直达（宠物菜单 → 聊天窗面板） ----------
+  handle('ui:take-pending-panel', () => { const p = pendingPanel; pendingPanel = null; return { panel: p }; });
+
   logger.info('IPC 路由注册完成');
 }
+
+// 宠物菜单/托盘打开聊天窗内的指定面板（如 Token 看板）。
+// 竞态处理：聊天窗刚创建还在加载时 push 会丢——先落 pending，渲染端 boot 时主动来取；
+// 已加载完成则直接推送（模块顶层已注册 dp.on，did-finish-load 后订阅必在）。
+let pendingPanel = null;
+function openPanelInChat(panel) {
+  windows.openWindow('chat');
+  const win = windows.getWindow('chat');
+  if (!win || win.isDestroyed()) return;
+  if (win.webContents.isLoading()) {
+    pendingPanel = panel;
+  } else {
+    try { win.webContents.send('ui:open-panel', { panel }); } catch (_) {}
+  }
+}
+function openTokenBoardFromMenu() { openPanelInChat('tokens'); }
 
 // 宠物右键菜单（主进程 Menu.popup 保证层级）
 function buildPetMenu() {
@@ -425,6 +519,7 @@ function buildPetMenu() {
     { label: '💬 聊天', click: () => windows.openWindow('chat') },
     { label: '📖 陪读', click: () => windows.openWindow('reader') },
     { label: '⏱ 时间统计', click: () => windows.openWindow('time') },
+    { label: '⚡ Token 看板', click: openTokenBoardFromMenu },
     { label: '📅 日程', click: () => windows.openWindow('schedule') },
     { label: '🎨 换装/形象', click: () => windows.openWindow('settings') },
     { label: '⚙️ 设置', click: () => windows.openWindow('settings') },
