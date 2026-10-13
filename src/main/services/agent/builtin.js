@@ -9,6 +9,7 @@ const path = require('path');
 const tools = require('./tools');
 const netSearch = require('./net-search');
 const llm = require('../llm');
+const hindsight = require('../hindsight-bridge');
 const { MAX_FILE_BYTES, MAX_DATAURL_CHARS, sniffMime, probeImage, toDataUrl } = require('./image-utils');
 
 // read_file 分段读取：大文件单段回填会把上下文撑爆，也可能被结果上限截掉而模型不知情。
@@ -114,6 +115,10 @@ tools.register({
   enabled: true,
   handler: async (args) => {
     const item = memory.addMemory({ content: args.content, importance: args.importance, type: args.type, scope: args.scope, ttlDays: args.ttlDays });
+    // Hindsight 双写（M3）：core 条目结构性跳过（评审 §6.2 物理隔离）
+    if (item.scope !== 'core') {
+      hindsight.retain([{ content: item.content, context: 'deskpal-save-memory', metadata: { type: item.type, importance: String(item.importance) } }], { source: 'deskpal-save-memory' }).catch(() => {});
+    }
     const scopeTxt = item.scope === 'core' ? 'core·身份级' : item.scope === 'ephemeral' ? `ephemeral·${item.ttlDays}天` : 'working·滚动';
     const tail = item.note ? `。注意：${item.note}` : item.merged ? '（与已有条目同文，已合并更新而非新增）' : '';
     return `已写入长期记忆（${item.type}｜${scopeTxt}｜重要性${item.importance}）：${item.content}${tail}`;

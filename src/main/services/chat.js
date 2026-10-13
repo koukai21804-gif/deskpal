@@ -16,6 +16,7 @@ const markers = require('./agent/markers');
 const userProfile = require('./user-profile');
 const canon = require('./canon');
 const searchLedger = require('./agent/search-ledger');
+const hindsight = require('./hindsight-bridge');
 const sessions = require('./sessions');
 const memory = require('./memory');
 
@@ -162,7 +163,7 @@ const ctxEst = createAnchoredEstimator();
 // agentRun 报告分级上限（G-1）：窗口内最新一份 2000、更早的 500。
 // opts.work：戏外工作轮 → 历史窗收窄到 CTX_MSGS_WORK（见常量注释）。
 function buildMessages(tab, history, opts = {}) {
-  const system = tab === 'quick' ? prompts.quickSystem() : prompts.roleplaySystem();
+  const system = tab === 'quick' ? prompts.quickSystem() : prompts.roleplaySystem({ hindsight: opts.hindsight });
   const winSize = opts.work && tab === 'roleplay' ? CTX_MSGS_WORK : CTX_MSGS;
   const win = history.slice(-winSize);
   const lastAgentIdx = win.reduce((a, m, i) => (m.agentRun ? i : a), -1);
@@ -216,7 +217,11 @@ async function send(tab, text) {
   history.push({ id: 'm' + Date.now().toString(36), role: 'user', content: String(text), work: work || undefined, at: dayjs().format() });
   saveHistory(tab, history);
 
-  const messages = buildMessages(tab, history, { work });
+  // Hindsight 语义召回预取（M3）：对最新用户消息异步取回随本轮 system 注入；
+  // 1.2s 超时全失败静默（[]），绝不阻塞主链；仅 roleplay（速问为工具性短答，不背语义记忆税）
+  let hindsightRecalls = [];
+  if (tab === 'roleplay') { try { hindsightRecalls = await hindsight.recall(String(text)); } catch (_) {} }
+  const messages = buildMessages(tab, history, { work, hindsight: hindsightRecalls });
   // 锚点候选：本次请求覆盖的末条历史消息 id（成功后上游 prompt_tokens 落锚于此，P0-2）
   const anchorKey = history[history.length - 1].id;
   const sessionId = tab === 'roleplay' ? sessions.active().id : undefined;
@@ -384,6 +389,15 @@ async function runExtract(sess, since) {
   }
 
   memory.mergeExtracted(extracted);
+  // Hindsight 双写（M3）：提取结果写入语义库（attribution=user，A 档——内容源自用户对话陈述）。
+  // core 目标条目结构性跳过（评审 §6.2 物理隔离：身份级内容绝不入语义库，合并进 core 的文本不 retain）
+  try {
+    const coreIds = new Set((memDoc.items || []).filter(i => i.scope === 'core').map(i => i.id));
+    const toRetain = extracted
+      .filter(x => !x.mergeInto || !coreIds.has(x.mergeInto))
+      .map(x => ({ content: x.content, context: 'deskpal-memory-tick', metadata: { type: x.type } }));
+    if (toRetain.length) hindsight.retain(toRetain, { source: 'deskpal-memory-tick' }).catch(() => {});
+  } catch (_) {}
   sess.userCountSince = 0;
   sess.lastExtractAt = dayjs().format();
   sessions.persist(sessions.ensure().doc);

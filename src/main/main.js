@@ -58,6 +58,36 @@ if (!gotLock) {
       else logger.warn('[noreki-link] 未就绪: ' + linkInit.reason);
     } catch (e) { logger.error('[noreki-link] 初始化失败: ' + e.message); }
 
+    // Hindsight 语义记忆服务：启动探测 → 未运行则弹窗询问（用户提示式开关，评审 §7.2；不做开机自启）。
+    // 「不再提示」写入 config/hindsight.json；启动动作 spawn hindsight-service.bat（D:\hindsight）。
+    try {
+      const hindsight = require('./services/hindsight-bridge');
+      hindsight.startupCheck().then(async (chk) => {
+        if (!chk.prompt) return;
+        const { Notification } = require('electron');
+        try { if (Notification.isSupported()) new Notification({ title: 'deskpal · 记忆服务未运行', body: 'Hindsight 语义记忆服务未启动，本次会话将没有深层记忆召回。' }).show(); } catch (_) {}
+        const r = await dialog.showMessageBox({
+          type: 'question', title: 'deskpal · 记忆服务未运行',
+          message: 'Hindsight 语义记忆服务未运行', buttons: ['立即启动', '本次跳过', '不再提示'],
+          defaultId: 0, cancelId: 1, noLink: true,
+          detail: '启动后本机会占用约 5-6GB 显存（bge 双模型）。也可以随时手动运行 D:\\hindsight\\hindsight-service.bat start',
+        });
+        if (r.response === 2) { store.set('hindsight', { autoPrompt: false }); logger.info('[hindsight] 用户选择不再提示'); return; }
+        if (r.response === 0) {
+          const { spawn } = require('child_process');
+          try {
+            spawn('cmd.exe', ['/c', 'D:\\hindsight\\hindsight-service.bat', 'start'], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+            logger.info('[hindsight] 已请求启动记忆服务');
+          } catch (e) { logger.error('[hindsight] 启动脚本拉起失败: ' + e.message); return; }
+          setTimeout(async () => {
+            const up = await hindsight.isUp();
+            logger.info('[hindsight] 启动复探: ' + (up ? 'ok' : '尚未就绪（双模型加载最长约 2 分钟）'));
+            if (up) { try { const { Notification } = require('electron'); if (Notification.isSupported()) new Notification({ title: 'deskpal', body: '语义记忆服务已就绪' }).show(); } catch (_) {} }
+          }, 30000).unref();
+        }
+      }).catch((e) => logger.warn('[hindsight] startupCheck 失败: ' + e.message));
+    } catch (e) { logger.warn('[hindsight] 模块加载失败: ' + e.message); }
+
     // 开发自检（对齐 DESKPAL_SMOKE 模式）：DESKPAL_NOREKI_SEND=<正文> → 发一封测试信后退出
     if (process.env.DESKPAL_NOREKI_SEND) {
       try {
