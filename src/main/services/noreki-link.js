@@ -13,7 +13,8 @@ const crypto = require('crypto');
 const logger = require('../logger');
 const windows = require('../windows');
 
-const LINK_ROOT = 'D:/NorekiLink';
+// N-9 测试注：环境变量可覆写邮局根目录（仅测试用；默认路径不变）
+const LINK_ROOT = process.env.NOREKI_LINK_ROOT || 'D:/NorekiLink';
 const SELF_ID = 'titor@deskpal';
 const PEER_ID = 'clio@hermes';
 const OUTBOX_SUB = 'from-deskpal';   // 我写
@@ -188,23 +189,56 @@ function stampName() {
   return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}T${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}${d.getUTCMilliseconds().toString().padStart(3, '0')}`;
 }
 
+// N-9 修复（2026-10-13，问题清单 v1.1 §2.5）：发送三步闭环——「写 outbox → 读回校验 → 记账 sent」
+// 全部成功才返回 id；报 id = 已确认落 outbox 的硬保证。根因：原实现不调 ensureDirs，outbox 目录
+// 缺失时 atomicWriteJson 抛异常（信封 id 已生成、日志未落），向上变成悬空的「假成功」。
+// 台账失败若发生在信已落 outbox 之后：重试一次，仍失败则如实返回 ok+ledgerError（不回滚不假报错，
+// 也不让调用方重发造成重复投递——交付真相以 outbox 读回为准，台账缺口进日志供巡检）。
 function send(kind, body, ref = '') {
-  if (!state.key) return { ok: false, error: 'not-initialized' };
-  const env = makeEnvelope(kind, body, ref);
-  const outbox = path.join(LINK_ROOT, 'outbox', OUTBOX_SUB);
-  const dest = path.join(outbox, stampName() + '_' + env.id + '.json');
-  atomicWriteJson(dest, env);
-  log('send', env.id, 'ok', path.basename(dest));
-  // v1.5：sent 账本（记得自己发过信——显式文件，非 LLM 记忆）
-  try { ledgerAddSent(env.id, env.kind, env.body); } catch (e) { log('ledger', env.id, 'error', e.message); }
-  // 已发留档 → 己方 realm（协议 §1：中性 archive 只属于收件方；发件存根不入邮局，
-  // 否则与收件方的 archive/from-deskpal 语义相撞——20261011 实测踩雷修正）
   try {
-    const sentArch = path.join(state.dataDir, 'noreki-link', 'sent');
-    fs.mkdirSync(sentArch, { recursive: true });
-    fs.copyFileSync(dest, path.join(sentArch, path.basename(dest)));
-  } catch (_) {}
-  return { ok: true, id: env.id, file: dest, subject: subjectOf(env.body) };
+    if (!state.key) return { ok: false, error: 'not-initialized' };
+    const env = makeEnvelope(kind, body, ref);
+    try { ensureDirs(); } catch (e) {
+      log('send', env.id, 'error', 'ensure-dirs: ' + e.message);
+      return { ok: false, error: 'outbox-prepare-failed', detail: e.message };
+    }
+    const outbox = path.join(LINK_ROOT, 'outbox', OUTBOX_SUB);
+    const dest = path.join(outbox, stampName() + '_' + env.id + '.json');
+    // 步骤 1：原子写 outbox
+    try { atomicWriteJson(dest, env); } catch (e) {
+      log('send', env.id, 'error', 'outbox-write: ' + e.message);
+      return { ok: false, error: 'outbox-write-failed', detail: e.message };
+    }
+    // 步骤 2：读回校验（信封完整性与 id 一致）
+    try {
+      const back = JSON.parse(fs.readFileSync(dest, 'utf8'));
+      if (back.id !== env.id || back.body !== env.body) throw new Error('readback-mismatch');
+    } catch (e) {
+      try { fs.unlinkSync(dest); } catch (_) {}
+      log('send', env.id, 'error', 'readback: ' + e.message);
+      return { ok: false, error: 'outbox-readback-failed', detail: e.message };
+    }
+    // 步骤 3：sent 台账（重试一次）
+    let ledgerError = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { ledgerAddSent(env.id, env.kind, env.body); ledgerError = null; break; }
+      catch (e) { ledgerError = e.message; log('ledger', env.id, 'error', `attempt${attempt + 1}: ` + e.message); }
+    }
+    log('send', env.id, 'ok', path.basename(dest));
+    // 已发留档 → 己方 realm（协议 §1：中性 archive 只属于收件方；发件存根不入邮局，
+    // 否则与收件方的 archive/from-deskpal 语义相撞——20261011 实测踩雷修正）。非关键路径，失败仅告警。
+    try {
+      const sentArch = path.join(state.dataDir, 'noreki-link', 'sent');
+      fs.mkdirSync(sentArch, { recursive: true });
+      fs.copyFileSync(dest, path.join(sentArch, path.basename(dest)));
+    } catch (e) { log('sent-archive', env.id, 'error', e.message); }
+    const result = { ok: true, id: env.id, file: dest, subject: subjectOf(env.body) };
+    if (ledgerError) { result.ledgerError = ledgerError; log('send', env.id, 'warn', 'ledger-write-failed: ' + ledgerError); }
+    return result;
+  } catch (e) {
+    // 兜底：send 永不向上抛异常（异常会绕过返回值契约，造成调用方拿不到确定结果）
+    return { ok: false, error: 'send-exception', detail: e.message };
+  }
 }
 
 // ---------------- 接收 ----------------

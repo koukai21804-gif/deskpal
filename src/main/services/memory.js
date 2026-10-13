@@ -8,6 +8,7 @@
 // archive：淘汰条目的归档（可查、可还原，但不进注入面——「可回溯」不等于「还在认知里」）。
 // 该通道的所有操作不经过聊天历史/LLM，角色对此无感知（斜杠消息也不会入史）。
 const store = require('./store');
+const logger = require('../logger');
 
 const MAX = 50;
 const TYPES = ['relationship', 'event', 'fact', 'preference'];
@@ -37,7 +38,8 @@ function ensureIds() {
   const list = items();
   let dirty = false;
   for (const it of list) {
-    if (!it.id) { it.id = 'mem_' + Date.now().toString(36) + '_' + (++seq); dirty = true; }
+    // P0-4（2026-10-13）：无 id 回填必须留痕——静默修复会让「库内存在无 id 条目」这一异常状态不可见
+    if (!it.id) { it.id = 'mem_' + Date.now().toString(36) + '_' + (++seq); dirty = true; logger.warn('[memory] 无 id 条目已回填: ' + it.id + ' :: ' + String(it.content || '').slice(0, 30)); }
     if (!SCOPES.includes(it.scope)) { it.scope = 'working'; dirty = true; }
   }
   if (dirty) persist();

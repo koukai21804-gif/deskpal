@@ -283,7 +283,7 @@ const tools = require(path.join(ROOT, 'src/main/services/agent/builtin'));
 
 {
   const list = tools.list();
-  eq(list.map(t => t.name).sort(), ['add_reminder', 'list_dir', 'read_file', 'read_image', 'save_memory', 'web_search', 'write_file'], '七件套注册（v0.5.x 增 read_image 多模态图片读取）');
+  eq(list.map(t => t.name).sort(), ['add_reminder', 'list_dir', 'noreki_send', 'read_file', 'read_image', 'save_memory', 'web_search', 'write_file'], '八件套注册（v0.5.x 增 read_image；v1.5.1 增 noreki_send 发信通道）');
   const ri = list.find(t => t.name === 'read_image');
   ok(ri && ri.enabled && ri.permission === 'read' && !ri.params.offset, 'read_image 已注册（read 权限，仅 path 参数）');
   const wf = list.find(t => t.name === 'write_file');
@@ -295,7 +295,7 @@ const tools = require(path.join(ROOT, 'src/main/services/agent/builtin'));
   ok(wst && wst.enabled && wst.permission === 'read', 'web_search 已注册（read 权限，闸在 handler）');
   eq(tools.RESULT_CAPS.web_search, 12000, 'web_search 回填上限 12000');
   const schemas = tools.openAiSchemas();
-  eq(schemas.length, 7, 'OpenAI schema 数量');
+  eq(schemas.length, 8, 'OpenAI schema 数量（含 noreki_send）');
   const wfSchema = schemas.find(s => s.function.name === 'write_file');
   ok(wfSchema.function.parameters.properties.reason, 'schema 含 reason');
   ok(wfSchema.function.parameters.required.includes('reason'), 'reason 为必填');
