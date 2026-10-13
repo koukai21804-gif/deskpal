@@ -94,46 +94,59 @@ function renderLibrary() {
   root.innerHTML = `
     <div class="lib-toolbar">
       <button class="btn btn-primary" id="uploadBtn">📄 上传书籍 / 论文</button>
-      <span class="hint">支持 txt / md / pdf / doc / docx，解析后 AI 生成陪读剧情（需已配置 API）</span>
+      <button class="btn btn-primary" id="videoBtn">🎬 解析视频</button>
+      <span class="hint">文档支持 txt / md / pdf / doc / docx；视频支持 B站 / YouTube / MP4 直链 / 本地文件。解析后可选「陪读剧情」或「自由提问」模式</span>
     </div>
     <div class="lib-list" id="libList"></div>`;
   const listEl = root.querySelector('#libList');
   if (!books.length) {
-    listEl.innerHTML = `<div class="empty">还没有书。<br>上传一本，我来陪你读～</div>`;
+    listEl.innerHTML = `<div class="empty">还没有资料。<br>上传一本书或解析一个视频，我来陪你读～</div>`;
   }
   for (const b of books) {
     const card = document.createElement('div');
     card.className = 'book-card card';
-    const statusMap = { parsed: ['parsed', '待生成'], generating: ['generating', '生成中'], ready: ['ready', `可续读${b.hasCursor ? '' : ''}`], error: ['error', '失败'] };
+    const statusMap = { parsed: ['parsed', '待生成'], generating: ['generating', '生成中'], ready: ['ready', b.mode === 'free' ? '可提问' : (b.hasCursor ? '可续读' : '可开读')], error: ['error', '失败'] };
     const [cls, txt] = statusMap[b.status] || ['parsed', b.status];
     card.innerHTML = `
-      <div class="cover">📖</div>
+      <div class="cover">${b.isVideo ? '🎬' : '📖'}</div>
       <div class="info">
         <div class="title">${esc(b.title)}</div>
         <div class="sub">
           <span class="status-chip ${cls}">${txt}</span>
-          ${b.frames ? ` · ${b.frames} 帧` : ''}${b.qa ? ` · 问过 ${b.qa} 次` : ''}${b.meta?.chars ? ` · ${(b.meta.chars / 10000).toFixed(1)} 万字` : ''}
+          ${b.mode === 'free' && b.status === 'ready' ? ' · 自由提问' : ''}
+          ${b.frames ? ` · ${b.frames} 帧` : ''}${b.qa ? ` · 问过 ${b.qa} 次` : ''}${b.meta?.chars ? ` · ${(b.meta.chars / 10000).toFixed(1)} 万字` : ''}${b.isVideo && b.meta?.durationSeconds ? ` · ${Math.round(b.meta.durationSeconds / 60)} 分钟` : ''}
         </div>
       </div>
       <div class="row">
-        ${b.status === 'ready' ? `<button class="btn btn-sm btn-primary" data-a="play">▶ ${b.hasCursor ? '继续' : '开始陪读'}</button>` : ''}
-        ${b.status === 'parsed' ? `<button class="btn btn-sm btn-primary" data-a="gen">✨ 生成剧情</button>` : ''}
+        ${b.status === 'ready' && b.mode !== 'free' ? `<button class="btn btn-sm btn-primary" data-a="play">▶ ${b.hasCursor ? '继续' : '开始陪读'}</button>` : ''}
+        ${b.status === 'ready' && b.mode === 'free' ? `<button class="btn btn-sm btn-primary" data-a="play">💬 继续提问</button>` : ''}
+        ${b.status === 'parsed' ? `<button class="btn btn-sm btn-primary" data-a="gen" title="生成逐节讲解剧本，配测验与黑板">✨ 陪读剧情</button>` : ''}
+        ${b.status === 'parsed' ? `<button class="btn btn-sm" data-a="free" title="通读全文做笔记，然后安静等你提问">💬 自由提问</button>` : ''}
         ${b.status === 'generating' ? `<button class="btn btn-sm" data-a="view">查看进度</button>` : ''}
-        ${b.status === 'error' ? `<button class="btn btn-sm" data-a="gen">重试生成</button>` : ''}
-        ${b.status === 'ready' ? `<button class="btn btn-sm" data-a="regen" title="用当前人设与称呼重新生成剧情">🔄 重新生成</button>` : ''}
+        ${b.status === 'error' ? `<button class="btn btn-sm btn-primary" data-a="gen">✨ 重试剧情</button>` : ''}
+        ${b.status === 'error' ? `<button class="btn btn-sm" data-a="free" title="改走自由提问模式（通读全文→安静等提问）">💬 改自由提问</button>` : ''}
+        ${b.status === 'ready' && b.mode !== 'free' ? `<button class="btn btn-sm" data-a="regen" title="用当前人设与称呼重新生成剧情">🔄 重新生成</button>` : ''}
+        ${b.status === 'ready' && b.mode !== 'free' ? `<button class="btn btn-sm" data-a="tofree" title="改用自由提问模式：通读全文做笔记，安静等你提问（问答记录保留）">💬 转自由提问</button>` : ''}
+        ${b.status === 'ready' && b.mode === 'free' ? `<button class="btn btn-sm" data-a="toflow" title="改用逐节讲解剧本模式（问答记录保留）">📖 转陪读剧情</button>` : ''}
         <button class="btn btn-sm btn-icon" data-a="del" title="删除">🗑</button>
       </div>`;
     card.addEventListener('click', async (e) => {
       const a = e.target.closest('button')?.dataset.a;
       if (!a) return;
       if (a === 'play') return openBook(b.id);
-      if (a === 'gen' || a === 'regen') {
-        if (a === 'regen' && !(await confirmBox(`用当前人设与称呼重新生成《${b.title}》的剧本？\n（已有进度与举手问答会保留，剧情帧会全部重写）`, { okText: '重新生成' }))) return;
-        try {
-          await dp.readerGenerate(b.id);
-          await refreshBooks();
-          renderLibrary();
-        } catch (err) { toast(errText(err), 'error'); }
+      if (a === 'gen') return startGenerate(b.id, 'flow');
+      if (a === 'free') return startGenerate(b.id, 'free');
+      if (a === 'tofree') {
+        if (!(await confirmBox(`把《${b.title}》转为自由提问模式？\n\n她将通读全文重新做笔记（原剧情进度作废，问答记录保留），然后安静等你提问。`, { okText: '转换' }))) return;
+        return startGenerate(b.id, 'free');
+      }
+      if (a === 'toflow') {
+        if (!(await confirmBox(`把《${b.title}》转为逐节陪读剧情模式？\n（已有问答保留，将重新生成剧本帧）`, { okText: '转换' }))) return;
+        return startGenerate(b.id, 'flow');
+      }
+      if (a === 'regen') {
+        if (!(await confirmBox(`用当前人设与称呼重新生成《${b.title}》的剧本？\n（已有进度与举手问答会保留，剧情帧会全部重写）`, { okText: '重新生成' }))) return;
+        return startGenerate(b.id, 'flow');
       }
       if (a === 'view') return openBook(b.id);
       if (a === 'del') {
@@ -154,15 +167,106 @@ function renderLibrary() {
     if (!p) return;
     toast('正在解析文档…');
     try {
-      const { bookId, meta } = await dp.readerUpload(p);
-      toast(`解析完成：${meta.chars} 字符${meta.truncated ? '（已截断到 30 万）' : ''}`, 'ok');
+      const { meta } = await dp.readerUpload(p);
+      toast(`解析完成：${meta.chars} 字符${meta.truncated ? '（已截断到 30 万）' : ''}，请选择陪读剧情或自由提问模式`, 'ok');
+      // 停在书库：新卡片上选「陪读剧情」或「自由提问」（视频路径同款节奏）
       await refreshBooks();
-      // 直接进入生成
-      await dp.readerGenerate(bookId);
-      openBook(bookId);
+      renderLibrary();
     } catch (err) { toast(errText(err), 'error'); }
   });
+  root.querySelector('#videoBtn').addEventListener('click', () => openVideoModal());
 }
+
+async function startGenerate(bookId, mode) {
+  try {
+    await dp.readerGenerate(bookId, mode);
+    await refreshBooks();
+    openBook(bookId);
+  } catch (err) { toast(errText(err), 'error'); }
+}
+
+// ================= 视频解析弹窗 =================
+let videoModal = null;      // { close } 弹窗引用
+let videoModalState = null; // { running, token }
+function openVideoModal() {
+  const m = openModal({ title: '🎬 解析视频为陪读资料', width: '520px' });
+  videoModal = m;
+  videoModalState = { running: false, token: null };
+  m.body.innerHTML = `
+    <div class="field"><span class="label">视频链接（Bilibili / YouTube / .mp4 直链）</span>
+      <input type="text" id="vd-url" placeholder="https://www.bilibili.com/video/BV… 或 https://youtu.be/… 或 https://example.com/video.mp4" style="width:100%"></div>
+    <div class="field"><span class="label">或本地视频文件</span>
+      <div class="row"><button class="btn btn-sm" id="vd-pick">📁 选择文件（mp4 / mkv / webm / mov / avi…）</button>
+      <span class="hint" id="vd-file"></span></div></div>
+    <p class="hint">流程：优先抓取视频字幕（快且免费）；没有字幕时下载音频做语音转写（需配置 ASR，见 设置→API→视频解析）。完成后可选择「陪读剧情」或「自由提问」模式。上限 2 小时 / 1.5GB。</p>
+    <div class="row">
+      <button class="btn btn-primary" id="vd-start">开始解析</button>
+      <button class="btn" id="vd-cancel" style="display:none">取消</button>
+      <span class="hint" id="vd-status"></span>
+    </div>
+    <div class="progress" id="vd-bar-wrap" style="display:none;margin-top:10px"><div id="vd-bar" style="width:0%"></div></div>`;
+  let localPath = '';
+  m.body.querySelector('#vd-pick').addEventListener('click', async () => {
+    const p = await dp.pickFile({ title: '选择本地视频', filters: [{ name: '视频', extensions: ['mp4', 'mkv', 'webm', 'mov', 'avi', 'flv', 'm4v', 'ts', 'wmv'] }] });
+    if (p) { localPath = p; m.body.querySelector('#vd-file').textContent = p.split(/[\\/]/).pop(); }
+  });
+  const startBtn = m.body.querySelector('#vd-start');
+  const cancelBtn = m.body.querySelector('#vd-cancel');
+  startBtn.addEventListener('click', async () => {
+    const url = m.body.querySelector('#vd-url').value.trim();
+    if (!url && !localPath) { toast('请填写视频链接或选择本地文件', 'error'); return; }
+    videoModalState.running = true;
+    startBtn.disabled = true;
+    cancelBtn.style.display = '';
+    m.body.querySelector('#vd-bar-wrap').style.display = '';
+    m.body.querySelector('#vd-status').textContent = '正在启动…';
+    try {
+      await dp.readerUploadVideo(url ? { url } : { path: localPath });
+      // 成功路径由 reader:video-progress(done) 处理（含 bookId）；此处兜底关闭
+    } catch (err) {
+      m.body.querySelector('#vd-status').textContent = '';
+      toast(errText(err), 'error', 6000);
+      videoModalState.running = false;
+      startBtn.disabled = false;
+      cancelBtn.style.display = 'none';
+      m.body.querySelector('#vd-bar-wrap').style.display = 'none';
+    }
+  });
+  cancelBtn.addEventListener('click', async () => {
+    await dp.readerVideoCancel();
+    m.body.querySelector('#vd-status').textContent = '正在取消…';
+  });
+}
+
+dp.on('reader:video-progress', ({ token, stage, pct, message, done, bookId, error }) => {
+  const barWrap = document.querySelector('#vd-bar-wrap');
+  const bar = document.querySelector('#vd-bar');
+  const status = document.querySelector('#vd-status');
+  if (videoModalState && token) videoModalState.token = token;
+  if (bar && barWrap) { barWrap.style.display = ''; bar.style.width = Math.round(pct || 0) + '%'; }
+  if (status && message) status.textContent = message;
+  if (!done) return;
+  // 终态：成功→入库回书库；失败→恢复表单
+  if (error) {
+    toast('视频解析失败：' + error, 'error', 7000);
+    if (status) status.textContent = '';
+    if (barWrap) barWrap.style.display = 'none';
+    const startBtn = document.querySelector('#vd-start');
+    if (startBtn) { startBtn.disabled = false; const cb = document.querySelector('#vd-cancel'); if (cb) cb.style.display = 'none'; }
+    videoModalState && (videoModalState.running = false);
+    return;
+  }
+  if (bookId && videoModal) {
+    videoModal.close();
+    videoModal = null;
+    videoModalState = null;
+    toast('视频解析完成，已加入书库', 'ok');
+    (async () => {
+      await refreshBooks();
+      renderLibrary();
+    })();
+  }
+});
 
 // ================= 生成进度视图 =================
 function renderGenerating() {
@@ -199,10 +303,120 @@ async function openBook(bookId) {
   if (lib.status === 'error') { toast('上次生成失败：' + (lib.error || ''), 'error', 5000); renderLibrary(); return; }
   if (lib.status === 'parsed') { renderLibrary(); return; }
 
+  if ((lib.mode || 'flow') === 'free') { renderFreeView(); return; }
   cursorIdx = Math.max(0, lib.frames.findIndex(f => f.id === lib.cursor));
   if (cursorIdx < 0) cursorIdx = 0;
   renderPlayView();
   showFrame(cursorIdx, false);
+}
+
+// ================= 自由提问视图（通读完成 → 安静等提问） =================
+function renderFreeView() {
+  root.innerHTML = `
+    <div class="play-view">
+      <div class="stage-left" id="stageLeft">
+        <div class="gal-title">
+          <button class="btn btn-sm" id="backLib">📚 书库</button>
+          <strong>${esc(lib.title)}</strong>
+          <span class="grow"></span>
+          <span class="small muted">自由提问 · 已通读</span>
+        </div>
+        <div class="gal-scene">
+          <div class="gal-pet" id="galPet"></div>
+          <div class="gal-dialog" id="dialog"></div>
+        </div>
+        <div class="gal-controls">
+          <span class="small muted">${lib.meta?.source === 'video' ? '🎬 视频转写' : '📄 资料'} · ${((lib.meta?.chars || 0) / 10000).toFixed(1)} 万字</span>
+          <span class="grow"></span>
+          <label class="row small" style="gap:4px;cursor:pointer" title="拖动角色调整位置；滑杆调整角色大小">
+            🖼<button class="btn btn-sm" id="bgBtn" title="设置背景图片">背景</button>
+            <button class="btn btn-sm" id="bgClear" title="清除背景图片">🧹</button>
+            <input type="range" id="sizeRange" min="0.4" max="2.2" step="0.05" style="width:100px" value="${stageCfg.petScale || 1}">
+          </label>
+        </div>
+      </div>
+      <div class="splitter" id="splitter" title="左右拖动调整舞台与问答的宽度；双击恢复默认"></div>
+      <div class="stage-right" id="stageRight">
+        <div class="board" id="board"><div class="board-title">黑板</div><div class="board-empty">通读笔记会写在这里</div></div>
+        <div class="qa-panel">
+          <div class="qa-list" id="qaList"></div>
+          <div class="qa-input">
+            <input type="text" id="qaInput" placeholder="自由提问：关于这份资料的任何问题，随问随答…">
+            <button class="btn btn-sm btn-primary" id="qaBtn">提问</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  root.querySelector('#backLib').addEventListener('click', async () => {
+    await refreshBooks(); renderLibrary();
+  });
+  root.querySelector('#qaBtn').addEventListener('click', () => ask());
+  root.querySelector('#qaInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') ask(); });
+
+  applyStage();
+  enablePetDrag(root.querySelector('#galPet'));
+  root.querySelector('#bgBtn').addEventListener('click', async () => {
+    const p = await dp.pickFile({ title: '选择陪读背景图片', filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }] });
+    if (!p) return;
+    stageCfg.background = p;
+    await dp.storeSet('settings', { reader: stageCfg }).catch(() => {});
+    applyStage();
+    toast('背景已更新', 'ok');
+  });
+  root.querySelector('#bgClear').addEventListener('click', async () => {
+    stageCfg.background = '';
+    await dp.storeSet('settings', { reader: stageCfg }).catch(() => {});
+    applyStage();
+  });
+  const sizeRange = root.querySelector('#sizeRange');
+  sizeRange.addEventListener('input', () => {
+    stageCfg.petScale = +sizeRange.value;
+    applyStage();
+    clearTimeout(sizeSaveTimer);
+    sizeSaveTimer = setTimeout(saveStage, 400);
+  });
+
+  // 分隔条（与放映视图同款）
+  const leftEl = root.querySelector('#stageLeft');
+  const splitter = root.querySelector('#splitter');
+  splitter.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    splitter.setPointerCapture(e.pointerId);
+    const view = root.querySelector('.play-view');
+    const onMove = (ev) => {
+      const r = view.getBoundingClientRect();
+      if (!r.width) return;
+      stageCfg.splitPct = Math.min(75, Math.max(30, ((ev.clientX - r.left) / r.width) * 100));
+      leftEl.style.width = stageCfg.splitPct + '%';
+    };
+    const onUp = () => {
+      splitter.removeEventListener('pointermove', onMove);
+      splitter.removeEventListener('pointerup', onUp);
+      saveStage();
+    };
+    splitter.addEventListener('pointermove', onMove);
+    splitter.addEventListener('pointerup', onUp);
+  });
+  splitter.addEventListener('dblclick', () => {
+    stageCfg.splitPct = 58;
+    leftEl.style.width = '58%';
+    saveStage();
+  });
+
+  // 黑板 = 通读笔记；角色静候状态
+  const board = root.querySelector('#board');
+  if (lib.notes && lib.notes.trim()) {
+    board.innerHTML = `<div class="board-title">黑板 · 通读笔记</div><div class="md">${renderMD(lib.notes)}</div>`;
+  }
+  dp.petEmote('normal', 'reader', 0);
+  renderPet(document.getElementById('galPet'), 'normal', slotOf('normal'));
+  const dialog = root.querySelector('#dialog');
+  dialog.className = 'gal-dialog';
+  dialog.innerHTML = `<div class="speaker">${esc(petDisplayName)}</div><div class="text"></div>`;
+  typewrite(dialog.querySelector('.text'),
+    `《${lib.title}》我全部读完了，笔记在右边的黑板。${masterDisplayName}想从哪里问起？慢慢来，我等你。`);
+  renderQAList();
 }
 
 function renderPlayView() {
@@ -444,6 +658,7 @@ function nextFrame() {
 
 function maybeAutoAdvance() {
   if (!autoPlay || !lib) return;
+  if (!lib.frames || !lib.frames.length) return; // 自由提问模式无帧
   const f = curFrame();
   if (f.type === 'quiz' && lastQuizPick === null) return; // 等答题
   setTimeout(() => { if (autoPlay && typing && typing.done) nextFrame(); }, 2200);

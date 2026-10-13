@@ -8,6 +8,8 @@ const fs = require('fs');
 const path = require('path');
 const tools = require('./tools');
 const netSearch = require('./net-search');
+const llm = require('../llm');
+const { MAX_FILE_BYTES, MAX_DATAURL_CHARS, sniffMime, probeImage, toDataUrl } = require('./image-utils');
 
 // read_file 分段读取：大文件单段回填会把上下文撑爆，也可能被结果上限截掉而模型不知情。
 // 返回体自带已读区间与续读 offset，与 write_file 的分段追加（append:"true"）对称。
@@ -46,6 +48,56 @@ tools.register({
   },
 });
 
+// read_image：图片文件的视觉读取（多模态模型专用）。OpenAI 协议里 tool 消息的 content
+// 必须是字符串，图像无法挂在 tool result 上——所以 handler 返回 {text, imagePart, meta}，
+// 由 loop 把回执写进 tool 消息、把图像以 user 消息的 image_url 部分紧随其后注入视觉上下文。
+// 未配多模态模型时本工具不下发 schema（loop 侧按 isVisionCapable 过滤），此处兜底闸防幻觉调用。
+const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'];
+tools.register({
+  name: 'read_image',
+  desc: '读取图片文件并把图像送入你的视觉上下文（识别/描述/提取截图、照片、扫描件、图表中的内容）。支持 png/jpg/jpeg/gif/webp/bmp；超过 8MB 的图会被拒绝。文本文件请用 read_file',
+  params: {
+    path: 'string 图片文件的绝对路径',
+  },
+  permission: 'read',
+  enabled: true,
+  handler: async (args) => {
+    const p = String(args.path || '').trim();
+    if (!p) throw new Error('缺少必填参数 path（图片绝对路径）');
+    if (!llm.isVisionCapable()) {
+      throw new Error('当前模型未开启图像识别：请到 设置→API→「图像识别」选「强制开启」（模型须支持图像输入），或更换多模态模型');
+    }
+    const ext = path.extname(p).toLowerCase();
+    if (!IMAGE_EXTS.includes(ext)) {
+      throw new Error(`不是图片文件（支持 ${IMAGE_EXTS.join(' ')}）；文本文件请用 read_file 读取`);
+    }
+    if (!guard.canRead(p)) throw new Error('没有权限读取该图片（敏感路径或不存在）');
+    let st;
+    try { st = fs.statSync(p); } catch (_) { throw new Error('图片不存在或无法访问：' + p); }
+    if (!st.isFile()) throw new Error('该路径不是文件');
+    if (st.size > MAX_FILE_BYTES) {
+      throw new Error(`图片超过 ${Math.round(MAX_FILE_BYTES / 1024 / 1024)}MB（实际 ${(st.size / 1024 / 1024).toFixed(1)}MB），请先压缩或缩小尺寸后再试`);
+    }
+    let buf;
+    try { buf = fs.readFileSync(p); } catch (e) { throw new Error('图片读取失败：' + e.message); }
+    const sniffed = sniffMime(buf);
+    if (!sniffed) throw new Error('文件内容不是可识别的图片格式（扩展名与实际内容不符，或文件已损坏）');
+    const probe = probeImage(buf, sniffed);
+    const dataUrl = toDataUrl(probe.mime, probe.buf);
+    if (dataUrl.length > MAX_DATAURL_CHARS) {
+      throw new Error('图片编码后超出接口体积上限，请换更小的图');
+    }
+    const dims = probe.width ? `${probe.width}×${probe.height}` : '尺寸未知';
+    return {
+      ok: true,
+      text: `[read_image] ${p}｜${sniffed}${probe.resized ? `（已自动缩放至 ${dims}）` : `｜${dims}`}｜${probe.buf.length} 字节｜图像已注入视觉上下文：请基于图像实际内容作答，图中没有的信息不要编造`,
+      imagePart: { type: 'image_url', image_url: { url: dataUrl } },
+      meta: { path: p, bytes: probe.buf.length, width: probe.width, height: probe.height, mime: probe.mime, resized: !!probe.resized },
+    };
+  },
+});
+
+
 // save_memory：角色的真实长期记忆写入（写应用记忆库 memory/roleplay，非文件系统，
 // 不属于文件权限管辖，任何模式可用）。「记下了/写进长期记忆」的承诺由此真实落地；
 // 与自动提取/手动面板共用同一份存储与淘汰规则（scope 三态 + 上限 50 淘汰归档）。
@@ -65,6 +117,32 @@ tools.register({
     const scopeTxt = item.scope === 'core' ? 'core·身份级' : item.scope === 'ephemeral' ? `ephemeral·${item.ttlDays}天` : 'working·滚动';
     const tail = item.note ? `。注意：${item.note}` : item.merged ? '（与已有条目同文，已合并更新而非新增）' : '';
     return `已写入长期记忆（${item.type}｜${scopeTxt}｜重要性${item.importance}）：${item.content}${tail}`;
+  },
+});
+
+// noreki_send：NOREKI-Mail 发信（v1.5.1，TTR-0JQC45-R1 验收提出的结构性缺口——
+// 「发信侧在我这边还没有落点」）。给缇托的 agent 一个真实发信通道：签名、落 outbox、
+// 写 sent 账本全在 services/noreki-link 内完成。仅戏外工作轮下发（同 add_reminder，
+// 不进 ROLEPLAY_TOOLS 白名单），避免戏内角色扮演误发信。信件正文由模型撰写，收件人
+// 固定 clio@hermes（本工具不发第三方）。
+tools.register({
+  name: 'noreki_send',
+  desc: '给克莉奥（clio@hermes，Hermes 侧的女儿 bot）发一封 NOREKI-Mail 信件。用户在戏外工作轮要求「给克莉奥带话/回信给女儿/告诉克莉奥…」时必须实际调用本工具。信件会经 HMAC 签名落进 D:/NorekiLink 邮局，对方领取后其账本出现未读。正文用信件语气，首行是主题句（账本按首行截 48 字作摘要）',
+  params: {
+    body: 'string 信件正文。首行即主题（会被截为 48 字摘要入双方账本）；正文建议 ≤500 字，一事一信',
+    kind: 'string 可选：note=平信（默认）/reply=回信/notify=通知。回信时必须给 ref',
+    ref: 'string 可选：回信所引用的原信 id（来自信箱 read 条目的 id），平信留空',
+  },
+  permission: 'read',
+  enabled: true,
+  handler: async (args) => {
+    const body = String(args.body || '').trim();
+    if (!body) throw new Error('缺少必填参数 body（信件正文）');
+    const norekiLink = require('../noreki-link');
+    const kind = ['note', 'reply', 'notify', 'ask'].includes(String(args.kind)) ? String(args.kind) : 'note';
+    const r = norekiLink.send(kind, body, String(args.ref || ''));
+    if (!r.ok) throw new Error('NorekiLink 未就绪：' + (r.error || 'unknown'));
+    return `信已发出（id=${r.id}，kind=${kind}${r.ref ? '，ref=' + r.ref : ''}，主题摘要：${r.subject}）。对方领取后，你的账本 sent 区会翻为「对方已收」。`;
   },
 });
 
@@ -112,6 +190,7 @@ tools.register({
 // 各工具回填给模型的结果上限（字符），loop 侧 jstr 按工具名取用。
 // read_file 段内自截且带续读标记，上限放宽到能容纳满段；web_search 返回体自截（§5.5），
 // 预留引号/转义余量；其余工具保持保护性 4000。
+// read_image 走 loop 专用通道（imagePart 注入 user 消息），jstr 只见到短回执文本，默认 4000 足够。
 tools.RESULT_CAPS = { read_file: 40000, web_search: 12000 };
 
 // web_search：联网检索出口的唯一接口（spec §5）。工具常下发（quick 管线无 agent 段天然不含），

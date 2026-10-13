@@ -13,6 +13,8 @@ const MEMORY_CMD_RE = /^\s*\/\s*deep\s+memory\s+forcing\s*$/i;
 const PROFILE_CMD_RE = /^\s*\/\s*user\s+profile\s*$/i;
 const SEARCH_CMD_RE = /^\s*\/\s*search\s+ledger\s*$/i;
 const DISCIPLINE_CMD_RE = /^\s*\/\s*discipline\s*$/i;
+// 斜杠命令：token 看板面板（/tokens 或 /token；角色无感知，不入史不进 LLM）
+const TOKEN_CMD_RE = /^\s*\/\s*tokens?\s*$/i;
 
 let tab = 'roleplay';
 let streaming = null;           // { tab, el, raw, steps, changes, permTimers, sessionId }
@@ -34,6 +36,7 @@ app.appendChild(tabsEl);
 
 // 会话栏（v0.5）：主对话=日常角色扮演常驻；＋ 可开任意数量的专项会话（特定任务/场景扮演）。
 // 切换时主进程先把旧会话的未提取记忆固化入库，再落新 active——跨会话不丢长期信息。
+// v1.5：新增「📬 信件」按钮——NOREKI-Mail 信箱（克莉奥来信），徽标显示未读数，点按查看。
 const sessionBar = document.createElement('div');
 sessionBar.className = 'session-bar';
 sessionBar.innerHTML = `
@@ -41,8 +44,34 @@ sessionBar.innerHTML = `
   <select id="sessionSel" class="session-select" title="切换会话（切换前会自动固化未提取的记忆）"></select>
   <button class="btn btn-sm" id="sessionNewBtn" title="新建专项会话（特定任务/场景，与主对话互不干扰）">＋ 专项会话</button>
   <button class="btn btn-sm" id="sessionEditBtn" title="重命名 / 设置本会话主题">✏️</button>
-  <button class="btn btn-sm" id="sessionDelBtn" title="删除当前专项会话（主对话不可删）">🗑</button>`;
+  <button class="btn btn-sm" id="sessionDelBtn" title="删除当前专项会话（主对话不可删）">🗑</button>
+  <span class="grow"></span>
+  <button class="btn btn-sm" id="norekiMailBtn" title="NOREKI-Mail 信箱：克莉奥（clio@hermes）的来信。点按查看——信文将进入对话，缇托即可读信回应">📬 信件<span id="norekiMailBadge" class="mail-badge" style="display:none">0</span></button>`;
 app.appendChild(sessionBar);
+
+// 信箱：未读徽标刷新 + 查看动作（v1.5）
+async function refreshMailBadge() {
+  try {
+    const s = await dp.norekiMailbox();
+    const badge = document.getElementById('norekiMailBadge');
+    if (!badge) return;
+    badge.textContent = String(s.unreadCount || 0);
+    badge.style.display = s.unreadCount > 0 ? '' : 'none';
+  } catch (_) {}
+}
+document.getElementById('norekiMailBtn').addEventListener('click', async () => {
+  try {
+    const r = await dp.norekiRead();
+    if (r.delivered > 0) {
+      await reloadRoleplay();
+      toast(`已收取 ${r.delivered} 封来信（信文已进入对话，缇托可以读信回应了）`, 'ok');
+    } else {
+      toast('信箱没有未读来信', 'ok', 1500);
+    }
+    refreshMailBadge();
+  } catch (err) { toast(errText(err), 'error'); }
+});
+dp.on('noreki:mail', () => refreshMailBadge());
 
 const main = document.createElement('div');
 main.className = 'chat-wrap';
@@ -189,8 +218,19 @@ function msgEl(m) {
   const el = document.createElement('div');
   const kind = m.role === 'user' ? 'user' : m.role === 'system' ? 'system-notice' : m.error ? 'error' : 'assistant';
   // 戏外工作轮（/order 打标）消息 highlight（用户决策 2026-09-29）：真话边界整轮标亮
-  el.className = 'msg ' + kind + (m.work ? ' work' : '');
+  el.className = 'msg ' + kind + (m.work ? ' work' : '') + (m.mailInject ? ' noreki-mail' : '');
   el.dataset.id = m.id;
+  // 信纸卡（v1.5）：NOREKI-Mail 注入消息——头像换成信封，气泡加信头
+  if (m.mailInject) {
+    const mi = m.mailInject;
+    el.innerHTML = `
+      <div class="avatar">📩</div>
+      <div class="bubble mail-card">
+        <div class="mail-head">来信 · ${esc(mi.from)} <span class="mail-meta">｜${esc(mi.kind)}｜${esc(mi.sentAt)}</span></div>
+        <div class="md body">${renderMD(m.content || '')}</div>
+      </div>`;
+    return el;
+  }
   const avatar = m.role === 'user' ? '🧑' : m.role === 'system' ? '' : '🟢';
   const bodyHTML = m.error
     ? esc(m.content)
@@ -490,6 +530,9 @@ async function send(text) {
     if (DISCIPLINE_CMD_RE.test(text)) {
       input.value = ''; autoGrow(); openDisciplineModal(); return;
     }
+    if (TOKEN_CMD_RE.test(text)) {
+      input.value = ''; autoGrow(); openTokenBoard(); return;
+    }
   }
 
   // 1. 本地启动器匹配（零 API）
@@ -531,13 +574,14 @@ async function send(text) {
   try {
     const res = await dp.chatSend(tab, text);
     // 主进程兜底命中斜杠命令（渲染层正则失效时）：撤销本地用户消息与流式气泡，按命令类型接管
-    if (res && (res.memoryCommand || res.profileCommand || res.ledgerCommand || res.disciplineCommand)) {
+    if (res && (res.memoryCommand || res.profileCommand || res.ledgerCommand || res.disciplineCommand || res.tokenBoardCommand)) {
       streaming = null;
       setStreamUI(false);
       el.remove();
       const ui = histories[tab].findIndex(x => x.role === 'user' && x.content === text);
       if (ui >= 0) { histories[tab].splice(ui, 1); renderAll(); }
       if (res.disciplineCommand) openDisciplineModal();
+      if (res.tokenBoardCommand) openTokenBoard();
       return;
     }
     if (res.work) userMsg.work = true; // 主进程通道判定回填，renderAll 时用户气泡带「戏外」标
@@ -1027,6 +1071,284 @@ async function refreshLedger() {
 // 账本增量刷新（面板开着时每次落账推送一次）
 dp.on('search:ledger-changed', () => { if (ledgerModalBody) refreshLedger(); });
 
+// ---------- Token 看板面板（/tokens；角色无感知） ----------
+// 数据：本地扫描 11 个 AI 工具 + deskpal 自身的用量记录（claude/zcode/dsh/opencode 等各家本地文件）。
+// 合计口径 = 输入+输出+缓存读+缓存写（思考 token 含在输出里）；各工具「输入是否含缓存」语义
+// 差异已在主进程归一。限额是用户自填的本地参考值（官方额度都在各账号云端，本地拿不到）。
+const TK_WINDOWS = [['today', '今日'], ['d7', '近7天'], ['d30', '近30天'], ['all', '全部']];
+const TK_TABS = [['sessions', '💬 会话'], ['models', '🧠 模型'], ['devices', '💻 设备'], ['limits', '⚙ 限额与数据源']];
+const TK_STATUS_CN = { ok: '', meta: '元信息', empty: '无数据', missing: '未安装', error: '读取失败' };
+let tkModalBody = null, tkRange = 'today', tkTab = 'sessions';
+let tkCfg = { devices: [], limits: {} }, tkData = null, tkToolFilter = 'all';
+
+function fmtTok(n) {
+  n = +n || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+  return String(Math.round(n));
+}
+function fmtRel(ts) {
+  if (!ts) return '—';
+  const d = Date.now() - ts;
+  if (d < 0) return '刚刚';
+  if (d < 60e3) return Math.max(1, Math.round(d / 1000)) + ' 秒前';
+  if (d < 3600e3) return Math.round(d / 60e3) + ' 分前';
+  if (d < 86400e3) return Math.round(d / 3600e3) + ' 时前';
+  return Math.round(d / 86400e3) + ' 天前';
+}
+
+function tkLimitHtml(lim, label) {
+  if (!lim) return '';
+  const pct = Math.min(100, Math.round(lim.pct));
+  const eta = lim.etaMin != null ? ` · 按近1h速率约 ${lim.etaMin >= 60 ? Math.round(lim.etaMin / 60) + ' 时' : lim.etaMin + ' 分'}后到限` : '';
+  return `<div class="tk-lim ${pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : ''}" title="${label}限额 ${fmtTok(lim.limit)} tok${eta}">
+    <span class="tk-lim-label">${label}</span>
+    <span class="tk-bar"><span style="width:${pct}%"></span></span>
+    <span class="tk-lim-val">${pct}%</span>
+  </div>`;
+}
+
+function tkCard(t) {
+  const w = t.windows[tkRange] || { total: 0, requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  const statusTxt = t.status === 'ok'
+    ? `${t.sessions} 会话`
+    : (TK_STATUS_CN[t.status] || t.status);
+  const stCls = t.status === 'ok' ? 'st-ok' : t.status === 'meta' ? 'st-meta' : t.status === 'error' ? 'st-err' : 'st-off';
+  const rate = Math.round((t.rates.h1 || 0) / 60);
+  const lims = (t.limits && (t.limits.hour5 || t.limits.daily || t.limits.weekly))
+    ? tkLimitHtml(t.limits.hour5, '5h') + tkLimitHtml(t.limits.daily, '日') + tkLimitHtml(t.limits.weekly, '周')
+    : '';
+  return `<div class="tk-card">
+    <div class="tk-card-head">
+      <b>${esc(t.name)}</b><span class="tk-status ${stCls}">${esc(statusTxt)}</span>
+      <span class="grow"></span><span class="muted small">${t.lastActive ? fmtRel(t.lastActive) : ''}</span>
+    </div>
+    <div class="tk-big">${fmtTok(w.total)}<span class="tk-unit"> tok</span></div>
+    <div class="tk-sub">输入 ${fmtTok(w.input)} · 输出 ${fmtTok(w.output)} · 缓存读 ${fmtTok(w.cacheRead)} · 缓存写 ${fmtTok(w.cacheWrite)} · ${w.requests} 次调用</div>
+    ${t.windows.all.costUsd > 0 ? `<div class="tk-sub">累计成本 ≈ $${t.windows.all.costUsd.toFixed(2)}（工具自报）</div>` : ''}
+    ${t.status === 'ok' && rate > 0 ? `<div class="tk-sub muted">近1h ≈ ${fmtTok(rate)} tok/min</div>` : ''}
+    ${lims}
+    ${t.statusNote ? `<div class="tk-note">${esc(t.statusNote)}</div>` : ''}
+  </div>`;
+}
+
+function tkSessionsHtml() {
+  const tools = new Map((tkData.tools || []).map(t => [t.id, t]));
+  const filterOpts = [['all', `全部（${(tkData.sessions || []).length}）`]]
+    .concat((tkData.tools || []).filter(t => t.sessions > 0).map(t => [t.id, `${t.name}（${t.sessions}）`]));
+  const rows = (tkData.sessions || [])
+    .filter(s => tkToolFilter === 'all' || s.tool === tkToolFilter)
+    .slice(0, 200);
+  const multiDev = (tkData.devices || []).length > 1;
+  return `
+    <div class="row" style="gap:8px;margin-bottom:8px">
+      <select id="tkToolFilter" class="session-select" style="max-width:220px">${filterOptions(filterOpts, tkToolFilter)}</select>
+      <span class="hint grow">每个会话一行（最多列 200 条，按最近活跃排序）；数字为当前时间窗内</span>
+    </div>
+    <div class="tk-srows">
+      ${rows.map(s => {
+        const w = s.windows[tkRange] || { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, requests: 0 };
+        return `<div class="tk-srow" title="会话 ${esc(s.sessionId)}${s.project ? '\n项目 ' + esc(s.project) : ''}">
+          <span class="tk-s-tool">${esc((tools.get(s.tool) || {}).name || s.tool)}</span>
+          <span class="tk-s-title">${esc(s.title || s.sessionId)}</span>
+          <span class="tk-s-models">${(s.models || []).map(m => esc(m.model)).join(' + ')}</span>
+          ${multiDev ? `<span class="badge">${esc(s.device)}</span>` : ''}
+          <span class="tk-num b">${fmtTok(w.total)}</span>
+          <span class="tk-num">↑${fmtTok(w.input)} ↓${fmtTok(w.output)} ⤒${fmtTok(w.cacheRead)}</span>
+          <span class="tk-num">${w.requests} 次</span>
+          <span class="muted small">${fmtRel(s.lastAt)}</span>
+        </div>`;
+      }).join('') || '<p class="hint" style="padding:12px 0">这个时间窗内没有会话记录。</p>'}
+    </div>`;
+}
+
+function tkModelsHtml() {
+  const tools = new Map((tkData.tools || []).map(t => [t.id, t.name]));
+  const rows = (tkData.models || []).filter(m => (m.windows[tkRange] || {}).total > 0);
+  const max = Math.max(1, ...rows.map(m => m.windows[tkRange].total));
+  return `<div class="tk-srows">
+    ${rows.map(m => {
+      const w = m.windows[tkRange];
+      // 同名模型跨工具合并展示：悬浮列出各工具在当前时间窗内的占比（数据来自 index.js byTool 分桶）
+      const byToolTip = ((m.byTool || {})[tkRange] || []).map(t => `${tools.get(t.tool) || t.tool} ${fmtTok(t.total)}`).join(' · ');
+      return `<div class="tk-srow">
+        <span class="tk-s-tool" style="flex:1.2;min-width:0"><span class="tk-mname">${esc(m.model)}</span></span>
+        <span class="tk-s-models" style="flex:none"${byToolTip ? ` title="${esc(byToolTip)}"` : ''}>${m.tools.map(t => esc(tools.get(t) || t)).join(' · ')}</span>
+        <span class="tk-num b">${fmtTok(w.total)}</span>
+        <span class="tk-share"><span style="width:${Math.max(2, Math.round(w.total / max * 100))}%"></span></span>
+        <span class="tk-num">${w.requests} 次</span>
+      </div>`;
+    }).join('') || '<p class="hint" style="padding:12px 0">这个时间窗内没有模型用量。</p>'}
+  </div>`;
+}
+
+function tkDevicesHtml() {
+  const devs = tkData.devices || [];
+  return `
+    <div class="tk-devs">
+      ${devs.map(d => {
+        const w = d.windows[tkRange] || { total: 0, requests: 0 };
+        return `<div class="tk-card">
+          <div class="tk-card-head"><b>💻 ${esc(d.label)}</b>${d.label === tkData.hostname ? '<span class="tk-status st-ok">本机</span>' : ''}</div>
+          <div class="tk-big">${fmtTok(w.total)}<span class="tk-unit"> tok</span></div>
+          <div class="tk-sub">${w.requests} 次调用 · ${(d.tools || []).slice(0, 4).map(t => `${esc((tkData.tools.find(x => x.id === t.tool) || {}).name || t.tool)} ${fmtTok(t.total)}`).join(' · ')}</div>
+        </div>`;
+      }).join('')}
+    </div>
+    <h4 style="margin:12px 0 6px">额外数据根（其他设备 / 同步盘 / WSL）</h4>
+    <p class="hint" style="margin:0 0 8px">添加其他电脑上的工具数据目录（如同步盘里的 <b>.claude 等所在的主目录</b>），会按各工具的标准相对路径探测并归入你标注的设备名。路径只读，不会写入。</p>
+    <div id="tkDevList">
+      ${(tkCfg.devices || []).map((v, i) => `
+        <div class="row tk-dev-row" data-i="${i}" style="gap:6px;margin:4px 0">
+          <input type="text" class="tk-in" data-k="label" value="${esc(v.label)}" maxlength="40" style="width:120px" placeholder="设备名">
+          <input type="text" class="tk-in" data-k="path" value="${esc(v.path)}" maxlength="300" style="flex:1" placeholder="如 D:\\sync\\pc2-home（该机用户主目录）">
+          <button class="btn btn-sm" data-a="tk-dev-del" data-i="${i}">🗑</button>
+        </div>`).join('') || '<p class="hint" id="tkDevEmpty">（暂无额外设备）</p>'}
+    </div>
+    <div class="row" style="gap:6px;margin-top:6px">
+      <button class="btn btn-sm" data-a="tk-dev-add">＋ 添加</button>
+      <button class="btn btn-sm btn-primary" data-a="tk-dev-save">💾 保存并重扫</button>
+      <span class="hint grow" id="tkDevSaved"></span>
+    </div>`;
+}
+
+function tkLimitsHtml() {
+  return `
+    <p class="hint" style="margin:4px 0 10px">官方额度都在各家账号云端（Claude/Codex/GLM 均无本地档位表），这里的限额是<b>你自填的本地参考线</b>：达到后进度条变色，并按近 1 小时燃烧速率估算到限时间。单位 token，留空/0 = 不设。5h 为滚动 5 小时窗口；日 = 本地自然日；周 = 滚动 7 天。</p>
+    <div class="tk-srows" id="tkLimRows">
+      ${(tkData.tools || []).map(t => {
+        const lim = (tkCfg.limits || {})[t.id] || {};
+        return `<div class="tk-srow" data-tool="${esc(t.id)}">
+          <span class="tk-s-tool" style="flex:1">${esc(t.name)}</span>
+          <label class="tk-lim-in">5h <input type="number" min="0" data-k="hour5" value="${lim.hour5 || ''}" placeholder="—"></label>
+          <label class="tk-lim-in">日 <input type="number" min="0" data-k="daily" value="${lim.daily || ''}" placeholder="—"></label>
+          <label class="tk-lim-in">周 <input type="number" min="0" data-k="weekly" value="${lim.weekly || ''}" placeholder="—"></label>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="row" style="gap:8px;margin-top:10px">
+      <button class="btn btn-sm btn-primary" data-a="tk-lim-save">💾 保存限额</button>
+      <span class="hint grow" id="tkLimSaved"></span>
+    </div>`;
+}
+
+function filterOptions(opts, cur) {
+  return opts.map(([v, l]) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(l)}</option>`).join('');
+}
+
+function tkRender() {
+  const body = tkModalBody;
+  if (!body || !body.isConnected || !tkData) return;
+  const toolsOk = (tkData.tools || []).filter(t => t.status === 'ok');
+  const sum = toolsOk.reduce((a, t) => ({
+    total: a.total + t.windows[tkRange].total, requests: a.requests + t.windows[tkRange].requests,
+  }), { total: 0, requests: 0 });
+  body.innerHTML = `
+    <div class="row" style="gap:8px;margin-bottom:8px;flex-wrap:wrap">
+      ${TK_WINDOWS.map(([v, l]) => `<button class="btn btn-sm ${tkRange === v ? 'btn-primary' : ''}" data-range="${v}">${l}</button>`).join('')}
+      <span class="badge p" title="有用量数据的工具合计">合计 ${fmtTok(sum.total)} tok · ${sum.requests} 次</span>
+      <span class="grow"></span>
+      <button class="btn btn-sm" data-a="tk-refresh">⟳ 刷新</button>
+    </div>
+    <div class="tk-cards">${(tkData.tools || []).map(tkCard).join('')}</div>
+    <div class="tabs" style="margin:12px 0 8px">
+      ${TK_TABS.map(([v, l]) => `<div class="tab ${tkTab === v ? 'active' : ''}" data-tk-tab="${v}">${l}</div>`).join('')}
+      <span class="grow"></span>
+      <span class="hint" title="扫描耗时 ${tkData.scanMs}ms${tkData.zstd ? ' · zstd 解压组件：' + tkData.zstd : ' · 无 zstd 组件：DSH 压缩会话读不了明细'}">扫描于 ${fmtRel(Date.parse(tkData.scannedAt))} · 每 60s 自动刷新</span>
+    </div>
+    <div id="tkTabBody">${tkTab === 'sessions' ? tkSessionsHtml() : tkTab === 'models' ? tkModelsHtml() : tkTab === 'devices' ? tkDevicesHtml() : tkLimitsHtml()}</div>`;
+  bindTkEvents();
+}
+
+function tkCollectLimits() {
+  const limits = {};
+  const box = tkModalBody && tkModalBody.querySelector('#tkLimRows');
+  if (!box) return limits;
+  box.querySelectorAll('.tk-srow[data-tool]').forEach(row => {
+    const tool = row.dataset.tool;
+    const get = (k) => { const v = +row.querySelector(`[data-k=${k}]`).value; return Number.isFinite(v) && v > 0 ? Math.round(v) : 0; };
+    const lim = { hour5: get('hour5'), daily: get('daily'), weekly: get('weekly') };
+    if (lim.hour5 || lim.daily || lim.weekly) limits[tool] = lim;
+  });
+  return limits;
+}
+
+async function tkSaveCfg() {
+  try {
+    tkCfg = await dp.tokenBoardConfigSave(tkCfg);
+    toast('已保存', 'ok');
+    await tkLoad(true);
+  } catch (err) { toast(errText(err), 'error'); }
+}
+
+function bindTkEvents() {
+  const body = tkModalBody;
+  if (!body) return;
+  body.querySelectorAll('[data-range]').forEach(btn => btn.addEventListener('click', () => { tkRange = btn.dataset.range; tkRender(); }));
+  body.querySelectorAll('[data-tk-tab]').forEach(t => t.addEventListener('click', () => { tkTab = t.dataset.tkTab; tkRender(); }));
+  const refreshBtn = body.querySelector('[data-a=tk-refresh]');
+  if (refreshBtn) refreshBtn.addEventListener('click', () => tkLoad());
+  const filterSel = body.querySelector('#tkToolFilter');
+  if (filterSel) filterSel.addEventListener('change', () => { tkToolFilter = filterSel.value; tkRender(); });
+  // 设备根编辑
+  const devAdd = body.querySelector('[data-a=tk-dev-add]');
+  if (devAdd) devAdd.addEventListener('click', () => {
+    tkCfg.devices = tkCfg.devices || [];
+    tkCfg.devices.push({ label: '', path: '' });
+    tkTab = 'devices'; tkRender();
+  });
+  body.querySelectorAll('[data-a=tk-dev-del]').forEach(btn => btn.addEventListener('click', () => {
+    tkCfg.devices.splice(+btn.dataset.i, 1);
+    tkTab = 'devices'; tkRender();
+  }));
+  const devSave = body.querySelector('[data-a=tk-dev-save]');
+  if (devSave) devSave.addEventListener('click', async () => {
+    const rows = [...body.querySelectorAll('.tk-dev-row')];
+    tkCfg.devices = rows.map(r => ({
+      label: r.querySelector('[data-k=label]').value.trim(),
+      path: r.querySelector('[data-k=path]').value.trim(),
+    })).filter(v => v.label && v.path);
+    await tkSaveCfg();
+    tkTab = 'devices'; tkRender();
+  });
+  // 限额编辑
+  const limSave = body.querySelector('[data-a=tk-lim-save]');
+  if (limSave) limSave.addEventListener('click', async () => {
+    tkCfg.limits = tkCollectLimits();
+    await tkSaveCfg();
+    tkTab = 'limits'; tkRender();
+  });
+}
+
+async function openTokenBoard() {
+  // 防重复：面板已开着（宠物菜单再点一次/推送与 pending 双触发）→ 只刷新不叠弹窗
+  if (tkModalBody && tkModalBody.isConnected) { tkLoad(); return; }
+  const { body } = openModal({ title: '⚡ Token 看板 · 11 个 AI 工具 + deskpal · 角色无感知', width: '820px' });
+  tkModalBody = body;
+  try { tkCfg = await dp.tokenBoardConfig(); } catch (_) {}
+  await tkLoad();
+  // 面板开着每 60s 自动重扫（增量：没变的文件不重解析）；面板关闭即停
+  const timer = setInterval(() => {
+    if (!body.isConnected) { clearInterval(timer); if (tkModalBody === body) tkModalBody = null; return; }
+    tkLoad(true);
+  }, 60000);
+}
+
+async function tkLoad(silent) {
+  const body = tkModalBody;
+  if (!body || !body.isConnected) { tkModalBody = null; return; }
+  if (!silent) body.innerHTML = '<p class="hint" style="padding:12px">正在扫描各工具的本地用量记录…（首次可能要几秒）</p>';
+  let data;
+  try { data = await dp.tokenBoardQuery(); }
+  catch (err) { body.innerHTML = `<p class="hint">加载失败：${esc(errText(err))}</p>`; return; }
+  tkData = data;
+  tkRender();
+}
+
+// ---------- 面板直达（宠物右键菜单「Token 看板」→ 本窗打开） ----------
+dp.on('ui:open-panel', ({ panel } = {}) => { if (panel === 'tokens') openTokenBoard(); });
+
 // ---------- 导出 / 清空 ----------
 async function doExport() {
   try {
@@ -1048,12 +1370,18 @@ async function doClear() {
 (async function boot() {
   await initTheme();
   await refreshSessions();
+  refreshMailBadge(); // v1.5：信箱未读徽标
   histories.roleplay = await dp.chatHistory('roleplay');
   histories.quick = await dp.chatHistory('quick');
   try {
     const api = await dp.storeGet('api');
     if (api.model) main.querySelector('#modelTag').textContent = '模型：' + api.model + (api.hasKey ? '' : '（未配置 Key）');
     else main.querySelector('#modelTag').textContent = '尚未配置 API（设置 → API）';
+    // 图像识别徽标：多模态可用时提示（模型名词表命中或用户强制开启）
+    try {
+      const v = await dp.llmVisionDetect({});
+      if (v && v.capable) main.querySelector('#modelTag').textContent += ' ·📷视觉';
+    } catch (_) {}
   } catch (_) {}
   try {
     const s = await dp.storeGet('settings');
@@ -1062,4 +1390,6 @@ async function doClear() {
   loadInterrupted();
   renderAll();
   input.focus();
+  // 宠物菜单在窗口未就绪时触发的面板直达（pending 兜底，取后即清）
+  try { const pend = await dp.takePendingPanel(); if (pend && pend.panel === 'tokens') openTokenBoard(); } catch (_) {}
 })();

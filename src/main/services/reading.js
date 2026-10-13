@@ -1,4 +1,6 @@
 // 陪读管线：上传→两阶段生成（大纲→逐节 flow）→帧编译→举手提问侧信道→存档
+// v0.6：①自由提问模式（mode='free'：通读全文滚动笔记→静候提问）；②视频源
+// （uploadVideo：B站/YouTube/MP4直链/本地视频 → 字幕或语音转写 → markdown 文稿入库）
 const fs = require('fs');
 const path = require('path');
 const dayjs = require('dayjs');
@@ -8,11 +10,17 @@ const documents = require('./documents');
 const llm = require('./llm');
 const prompts = require('./prompts');
 const emotion = require('./emotion');
+const video = require('./video');
 const { rescueJSON } = require('./json-utils');
 const logger = require('../logger');
 
 const EMOTIONS = ['normal', 'happy', 'surprised', 'angry', 'thinking', 'sad'];
 const generating = new Map(); // bookId -> { canceled: bool }
+
+// 自由提问模式的通读窗口：最多 12 窗 × 10000 字符（超长资料均匀采样，覆盖头中尾）
+const DIGEST_MAX_WINDOWS = 12;
+const DIGEST_WINDOW_CHARS = 10000;
+const DIGEST_NOTES_CAP = 3000; // 落库笔记上限（字符）
 
 function bookPath(id) { return `books/${id}.json`; }
 function libPath(id) { return `library/${id}.json`; }
@@ -26,10 +34,56 @@ async function upload(filePath) {
   store.writeJSON(bookPath(id), { id, meta, text, createdAt: dayjs().format() });
   store.writeJSON(libPath(id), {
     id, title: meta.title, meta, status: 'parsed', error: null,
-    outline: null, sections: [], frames: [], qa: [], cursor: null,
+    mode: 'flow', notes: null, outline: null, sections: [], frames: [], qa: [], cursor: null,
     createdAt: dayjs().format(), updatedAt: dayjs().format(),
   });
   return { bookId: id, meta };
+}
+
+// ---------- 视频源：解析（字幕优先/语音转写兜底）→ 文稿入库 ----------
+// 进度经 reader:video-progress 推送到陪读窗；解析中可被 cancelVideoUpload 取消
+const videoJobs = new Map(); // token -> AbortController
+async function uploadVideo({ url, filePath }) {
+  if (videoJobs.size) throw friendlyError('已有视频在解析中，请等它完成或先取消');
+  if (!filePath && url) video.normalizeVideoSource(url); // 校验前置：非法链接不进管线
+  const token = 'vidtok_' + Date.now().toString(36);
+  const controller = new AbortController();
+  videoJobs.set(token, controller);
+  const win = require('../windows').getWindow('reader');
+  try {
+    const { markdown, meta } = await video.parseVideo({ url, filePath }, {
+      signal: controller.signal,
+      onProgress: (p) => { if (win && !win.isDestroyed()) win.webContents.send('reader:video-progress', { ...p, token, done: false }); },
+    });
+    if (!markdown || markdown.replace(/[#\s\d:-]/g, '').length < 200) {
+      throw friendlyError('视频内容提取到的文字太少（' + (meta.chars || 0) + ' 字符），无法陪读。可换一个有字幕/语音更清晰的视频');
+    }
+    const id = 'bk_' + Date.now().toString(36);
+    const title = meta.title || (filePath ? path.basename(filePath) : '视频内容');
+    const bookMeta = {
+      ...meta, title,
+      fileName: title, format: 'video', pages: null, chars: markdown.length,
+      truncated: !!meta.truncated, source: 'video',
+    };
+    store.writeJSON(bookPath(id), { id, meta: bookMeta, text: markdown, createdAt: dayjs().format() });
+    store.writeJSON(libPath(id), {
+      id, title, meta: bookMeta, status: 'parsed', error: null,
+      mode: 'flow', notes: null, outline: null, sections: [], frames: [], qa: [], cursor: null,
+      createdAt: dayjs().format(), updatedAt: dayjs().format(),
+    });
+    if (win && !win.isDestroyed()) win.webContents.send('reader:video-progress', { token, done: true, stage: 'done', pct: 100, bookId: id, meta: bookMeta });
+    return { bookId: id, meta: bookMeta };
+  } catch (e) {
+    const msg = e.userMsg || e.message;
+    if (win && !win.isDestroyed()) win.webContents.send('reader:video-progress', { token, done: true, stage: 'error', pct: 0, error: msg });
+    throw friendlyError(msg);
+  } finally {
+    videoJobs.delete(token);
+  }
+}
+function cancelVideoUpload() {
+  for (const c of videoJobs.values()) { try { c.abort(); } catch (_) {} }
+  return { ok: true };
 }
 
 function list() {
@@ -41,11 +95,42 @@ function list() {
     if (!lib) return null;
     return {
       id: lib.id, title: lib.title, status: lib.status, meta: lib.meta,
+      mode: lib.mode || 'flow', isVideo: !!(lib.meta && lib.meta.source === 'video'),
       createdAt: lib.createdAt, updatedAt: lib.updatedAt,
       frames: (lib.frames || []).length, qa: (lib.qa || []).length,
       hasCursor: !!lib.cursor,
     };
   }).filter(Boolean).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+}
+
+// 陪读足迹摘要（角色扮演 system prompt 注入用）：只含概要，不含正文/问答，控制上下文占用
+function listDigest(limit = 5) {
+  const libDir = path.join(store.getDataDir(), 'library');
+  let files = [];
+  try { files = fs.readdirSync(libDir).filter(f => f.endsWith('.json')); } catch (_) { return []; }
+  const items = [];
+  for (const f of files) {
+    const lib = store.readJSON('library/' + f, null);
+    if (!lib || lib.status !== 'ready') continue; // 只统计真正读过的（已生成/已通读）
+    const touched = lib.updatedAt || lib.createdAt || '';
+    if (!touched) continue;
+    // 有实际阅读痕迹才进足迹：剧情模式看过至少 1 帧、自由模式生成过笔记
+    const frames = lib.frames || [];
+    const readSome = (lib.mode === 'free') ? !!lib.notes : (frames.length > 0 && !!lib.cursor);
+    if (!readSome) continue;
+    const src = (lib.meta && lib.meta.source === 'video')
+      ? `🎬视频·${video.PLATFORM_LABELS[lib.meta.platform] || '视频'}`
+      : '📖资料';
+    let progress;
+    if (lib.mode === 'free') {
+      progress = (lib.qa || []).length ? `已通读，答过${(lib.qa || []).length}问` : '已通读待提问';
+    } else {
+      const idx = frames.findIndex(fr => fr.id === lib.cursor);
+      progress = idx >= 0 ? `看到第${idx + 1}/${frames.length}帧` : '未开读';
+    }
+    items.push({ touched, line: `《${String(lib.title || '未命名').slice(0, 30)}》｜${src}｜${progress}｜${dayjs(touched).format('MM-DD')}` });
+  }
+  return items.sort((a, b) => (a.touched < b.touched ? 1 : -1)).slice(0, limit).map(x => x.line);
 }
 
 function load(bookId) {
@@ -154,19 +239,89 @@ async function genFlow(pet, master, section, sectionText, index, total, bookTitl
   ];
 }
 
+// ---------- 自由提问模式：通读 → 滚动笔记 ----------
+// 全覆盖采样：短文一段读完；长文按 10000 字窗衔接（相邻窗小重叠保证边界不断档）；
+// 超长文本（>12 窗）放大窗宽保证 12 次调用内读完全文，不跳读
+function digestWindows(text) {
+  const t = String(text || '');
+  if (!t) return [];
+  if (t.length <= DIGEST_WINDOW_CHARS) return [t];
+  const n = Math.min(DIGEST_MAX_WINDOWS, Math.ceil(t.length / DIGEST_WINDOW_CHARS));
+  const size = Math.max(DIGEST_WINDOW_CHARS, Math.ceil(t.length / n));
+  const step = (t.length - size) / Math.max(1, n - 1);
+  const wins = [];
+  for (let i = 0; i < n; i++) {
+    const start = Math.round(step * i);
+    wins.push(t.slice(start, i === n - 1 ? t.length : start + size));
+  }
+  return wins;
+}
+
+function stripFences(s) {
+  return String(s || '').replace(/^\s*```[a-z]*\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+}
+
+// 单窗通读：失败重试一次；仍失败则保留旧笔记继续（个别窗口垮掉不至于全盘失败）
+async function genDigestStep(pet, bookTitle, notes, chunk, index, total) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const out = await llm.genericCompletion([{
+      role: 'system',
+      content: prompts.readingDigestStepPrompt(pet, bookTitle, notes, chunk, index, total) +
+        (attempt > 0 ? '\n\n【注意】上一次输出异常。只输出笔记正文纯文本，不要任何标题、代码围栏或解释。' : ''),
+    }], { temperature: 0.3, maxTokens: 4200 });
+    const clean = stripFences(out);
+    if (clean && clean.length >= 50) return clean.slice(0, DIGEST_NOTES_CAP);
+    logger.warn(`自由通读第 ${index} 段输出异常(第 ${attempt + 1} 次)，长度 ${clean.length}`);
+  }
+  return null;
+}
+
+async function generateFree(bookId, lib, book, state) {
+  const personaData = canon.view();
+  const pet = personaData.pet;
+  const windows = digestWindows(book.text);
+  progress(bookId, 'digest', 8, `开始通读《${lib.title}》全文（共 ${windows.length} 段）…`);
+  let notes = '';
+  for (let i = 0; i < windows.length; i++) {
+    if (state.canceled) throw friendlyError('已取消');
+    progress(bookId, 'digest', 8 + Math.round(((i + 1) / windows.length) * 82), `正在通读第 ${i + 1}/${windows.length} 段并整理笔记…`);
+    const next = await genDigestStep(pet, lib.title, notes, windows[i], i + 1, windows.length);
+    if (next) notes = next;
+    else if (i === 0 && !notes) notes = windows[i].slice(0, DIGEST_NOTES_CAP); // 首段彻底失败：原文摘录兜底
+    lib.notes = notes;
+    lib.updatedAt = dayjs().format();
+    store.writeJSON(libPath(bookId), lib);
+  }
+  if (!notes || notes.replace(/\s/g, '').length < 50) throw friendlyError('通读笔记生成失败：模型输出异常（可重试，或在 设置→API 换一个模型）');
+  lib.notes = notes.slice(0, DIGEST_NOTES_CAP);
+  lib.status = 'ready';
+  lib.updatedAt = dayjs().format();
+  store.writeJSON(libPath(bookId), lib);
+  progress(bookId, 'done', 100, '通读完成，我随时可以回答关于这份资料的问题');
+}
+
 // ---------- 生成主流程 ----------
-async function generate(bookId) {
+// mode='flow'（默认）：大纲→逐节剧本；mode='free'：通读全文→滚动笔记→静候提问
+async function generate(bookId, { mode = 'flow' } = {}) {
   if (generating.has(bookId)) throw friendlyError('这本书正在生成中');
   const lib = load(bookId);
   const book = store.readJSON(bookPath(bookId), null);
   if (!book) throw friendlyError('书籍数据缺失');
   const state = { canceled: false };
   generating.set(bookId, state);
+  const m = mode === 'free' ? 'free' : 'flow';
 
   const run = (async () => {
     try {
-      lib.status = 'generating'; lib.error = null; lib.outline = null; lib.sections = []; lib.frames = [];
+      lib.status = 'generating'; lib.error = null; lib.mode = m;
+      lib.outline = null; lib.sections = []; lib.frames = []; lib.cursor = null;
       lib.updatedAt = dayjs().format(); store.writeJSON(libPath(bookId), lib);
+
+      if (m === 'free') {
+        await generateFree(bookId, lib, book, state);
+        return;
+      }
+
       progress(bookId, 'outline', 5, '正在分析全书结构…');
 
       const personaData = canon.view();
@@ -250,19 +405,26 @@ function relevantExcerpts(text, question, topN = 3, chunkSize = 800) {
 
 async function ask(bookId, question) {
   const lib = load(bookId);
-  if (lib.status !== 'ready') throw friendlyError('剧本还没生成完成，暂时不能提问');
+  if (lib.status !== 'ready') throw friendlyError('还没准备好——剧情/通读生成完成后才能提问');
   const book = store.readJSON(bookPath(bookId), null);
   const reqId = llm.newReqId('qa');
   const win = require('../windows').getWindow('reader');
 
-  // 当前所在节的上下文
-  const curFrame = (lib.frames || []).find(f => f.id === lib.cursor);
-  const contextSection = lib.outline ? (lib.outline.find(s => s.sectionId === (curFrame && curFrame.sectionId)) || {}).title : '';
-
-  const excerpts = relevantExcerpts(book ? book.text : '', question);
   const personaData = canon.view();
+  const pet = personaData.pet;
   const master = (personaData.user && String(personaData.user.name || '').trim()) || '主人';
-  const messages = [{ role: 'system', content: prompts.readingQAPrompt(personaData.pet, master, question, excerpts, contextSection) }];
+  const free = (lib.mode || 'flow') === 'free';
+
+  // 检索上下文：自由模式多带几段（没有剧情节次锚点，问答全靠它）
+  const excerpts = relevantExcerpts(book ? book.text : '', question, free ? 4 : 3);
+  const messages = free
+    ? [{ role: 'system', content: prompts.readingFreeQAPrompt(pet, master, question, lib.notes || '（笔记缺失，只能靠原文节选回答）', excerpts) }]
+    : (() => {
+      // 当前所在节的上下文（outline 存的是 id 字段，帧引用 sectionId——两边对齐）
+      const curFrame = (lib.frames || []).find(f => f.id === lib.cursor);
+      const contextSection = lib.outline ? ((lib.outline.find(s => s.id === (curFrame && curFrame.sectionId)) || {}).title || '') : '';
+      return [{ role: 'system', content: prompts.readingQAPrompt(pet, master, question, excerpts, contextSection) }];
+    })();
 
   (async () => {
     try {
@@ -286,4 +448,4 @@ async function ask(bookId, question) {
   return { reqId };
 }
 
-module.exports = { upload, list, load, del, generate, cancelGenerate, save, ask };
+module.exports = { upload, uploadVideo, cancelVideoUpload, list, listDigest, load, del, generate, cancelGenerate, save, ask, digestWindows, DIGEST_WINDOW_CHARS, DIGEST_MAX_WINDOWS };

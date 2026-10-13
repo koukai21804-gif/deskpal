@@ -243,3 +243,75 @@
   border: 1px solid var(--dp-border); border-radius: 8px; background: var(--dp-panel);
   padding: 6px 9px;
 }
+
+/* ---------- Token 看板（/tokens 面板） ---------- */
+.tk-cards {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+}
+.tk-card {
+  border: 1px solid var(--dp-border); border-radius: 10px;
+  background: var(--dp-panel); padding: 8px 10px; min-width: 0;
+}
+.tk-card-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.tk-status {
+  flex: none; font-size: 10.5px; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--dp-border); color: var(--dp-text-muted);
+}
+.tk-status.st-ok { color: var(--dp-ok, #3f9142); border-color: #3f914255; }
+.tk-status.st-meta { color: #3f7fd6; border-color: #3f7fd655; }
+.tk-status.st-err { color: var(--dp-danger, #c2504a); border-color: #c2504a55; }
+.tk-big { font-size: 19px; font-weight: 700; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
+.tk-unit { font-size: 11px; font-weight: 400; color: var(--dp-text-muted); }
+.tk-sub { font-size: 11.5px; color: var(--dp-text-muted); font-variant-numeric: tabular-nums; }
+.tk-note { font-size: 11px; color: var(--dp-text-muted); margin-top: 4px; border-top: 1px dashed var(--dp-border); padding-top: 4px; }
+.tk-lim { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 11px; color: var(--dp-text-muted); }
+.tk-lim-label { flex: none; }
+.tk-lim-val { flex: none; font-variant-numeric: tabular-nums; }
+.tk-bar {
+  flex: 1; height: 6px; border-radius: 4px; background: var(--dp-panel-2);
+  border: 1px solid var(--dp-border); overflow: hidden; display: block;
+}
+.tk-bar > span { display: block; height: 100%; background: var(--dp-accent); }
+.tk-lim.warn .tk-bar > span { background: #d9a02b; }
+.tk-lim.danger .tk-bar > span { background: var(--dp-danger, #c2504a); }
+.tk-srows { display: flex; flex-direction: column; gap: 4px; max-height: 340px; overflow-y: auto; }
+.tk-srow {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  border: 1px solid var(--dp-border); border-radius: 8px;
+  background: var(--dp-panel); padding: 5px 9px; font-size: 12px;
+}
+.tk-s-tool { flex: none; width: 86px; font-size: 11px; color: var(--dp-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tk-s-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tk-mname { font-weight: 600; }
+.tk-s-models { flex: none; max-width: 200px; font-size: 11px; color: var(--dp-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tk-num { flex: none; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--dp-text-muted); }
+.tk-num.b { font-weight: 700; color: var(--dp-text); font-size: 12.5px; }
+.tk-share { flex: none; width: 90px; height: 6px; border-radius: 4px; background: var(--dp-panel-2); border: 1px solid var(--dp-border); overflow: hidden; }
+.tk-share > span { display: block; height: 100%; background: var(--dp-accent); }
+.tk-devs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.tk-lim-in { flex: none; display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--dp-text-muted); }
+.tk-lim-in input { width: 90px; }
+.tk-in {
+  border: 1px solid var(--dp-border); border-radius: 7px; background: var(--dp-panel);
+  color: var(--dp-text); font-size: 12px; padding: 3px 8px;
+}
+.tk-in:focus { outline: none; border-color: var(--dp-accent); }
+
+/* ===== NOREKI-Mail v1.5：信箱按钮徽标 + 信纸卡 ===== */
+.mail-badge {
+  display: inline-block; min-width: 16px; margin-left: 5px; padding: 0 5px;
+  border-radius: 8px; background: #e5534b; color: #fff;
+  font-size: 11px; line-height: 16px; text-align: center; font-weight: 600;
+}
+.msg.noreki-mail { }
+.msg.noreki-mail .bubble.mail-card {
+  border: 1px solid #d0b3e6;
+  background: linear-gradient(180deg, rgba(216,191,235,.16), rgba(216,191,235,.05));
+  box-shadow: 0 1px 6px rgba(150,100,200,.10);
+}
+.msg.noreki-mail .mail-head {
+  font-size: 12px; font-weight: 600; color: #7a4fa3;
+  padding-bottom: 6px; margin-bottom: 6px;
+  border-bottom: 1px dashed rgba(160,120,200,.35);
+}
+.msg.noreki-mail .mail-meta { font-weight: 400; font-size: 11px; color: var(--dp-muted, #888); }

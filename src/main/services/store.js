@@ -28,6 +28,7 @@ const FILE_MAP = {
   'canon/seal': 'config/canon-seal.json',
   'canon/opshist': 'config/ops-history.json',
   'schedule/events': 'schedule/events.json',
+  'tokenBoard': 'config/token-board.json',
 };
 
 // 内置默认宠物「缇托·诺蕾姬」的形象差分图（resources/pet/titor/<emotion>.png）
@@ -41,6 +42,9 @@ const DEFAULTS = {
     theme: { accent: '#7DBE3C', mode: 'light' },
     pet: { bubbleSeconds: 6, scale: 1, sleep: false },
     reader: { background: '', petScale: 1, petX: 50, petY: 40, splitPct: 58, dialog: { bg: '', family: '', size: 0, color: '' } },
+    // 视频解析工具链（yt-dlp / ffmpeg）：路径留空 = 自动找 数据目录/bin 与系统 PATH；
+    // 设置页「导入」会把用户选中的 exe 复制进 数据目录/bin
+    video: { ytDlpPath: '', ffmpegPath: '' },
     activity: { paused: false, idleThresholdSec: 180, windowPollMs: 1000, idlePollMs: 5000 },
     schedule: { leadEvent: 60, leadStart: 5, leadDeadline: 120, snoozeMin: 10, sound: true, systemNotification: true, catchupHours: 24 },
     agent: { enabled: true, maxRounds: 8, permissionTimeoutSec: 120, permissionMode: 'read', toolMaxTokens: 8192, toolCtxTokenBudget: 40000, webSearch: { enabled: false, autonomousDailyLimit: 100, cooldownMin: 10, blockedTopics: [] } },
@@ -95,6 +99,12 @@ const DEFAULTS = {
     endpoint: '', model: '', apiKeyEnc: '',
     params: { temperature: 0.8, maxTokens: 2048, topP: 0.9, frequencyPenalty: 0.3, presencePenalty: 0.3 },
     toolsStreamBroken: false, // ★H：网关不支持 stream+tools 时置 true，决策轮自动降级非流式
+    // 图像识别（多模态 vision）三态：'auto'=按模型名启发式（默认）/ true=强制开启 / false=强制关闭。
+    // 判定入口 llm.isVisionCapable()；决定 read_image 工具是否下发给模型
+    vision: 'auto',
+    // 视频解析的语音识别（ASR，OpenAI 兼容 /audio/transcriptions）：baseUrl/model/key 不填时
+    // 跟随主接口地址与 Key；keyEnc 经 safeStorage 加密（store:get 'api' 时剥密文）
+    asr: { baseUrl: '', model: '', keyEnc: '' },
   },
   // 联网搜索出口配置（titor_net_access_spec §5.3）：source ∈ ''(未配置)|exa|tavily|brave|searxng|stub；
   // 密钥经 safeStorage 加密为 searchKeyEnc（stub 仅测试用，不出现在设置页清单）
@@ -131,6 +141,10 @@ const DEFAULTS = {
   // 档案满载淘汰归档（v0.5 M-4）：P2/P2b 满载时被腾位的条目 append 到这里，面板可查可还原
   'user/profile-archive': { items: [] },
   'schedule/events': { version: 1, events: [] },
+  // token 看板（开发版 /tokens 面板）：devices = 额外数据根目录（标注设备名，如同步盘/WSL 挂载，
+  // 每个根按各工具标准相对路径探测）；limits = 每工具本地限额（hour5/daily/weekly，单位 token，
+  // 0 或缺省=未设置）。官方额度都在各账号云端，这里只存用户自填的参考值——不预造数。
+  'tokenBoard': { version: 1, devices: [], limits: {} },
 };
 
 function isPlainObject(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }

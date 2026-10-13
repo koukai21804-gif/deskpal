@@ -27,7 +27,7 @@ const FAKE_DONE_MSG = '上一轮你没有调用任何工具就声称完成了任
 const DENY_BREAK_MSG = '用户已两次拒绝同一写入目标，停止再次尝试该目标。';
 const LENGTH_MSG = '上一轮输出因达到 max_tokens 上限被截断，末尾的工具调用没有执行、任务未完成。请重新来：正文从简（≤100字），直接调用工具；写入大文件必须分段——先 write_file 写第一段（≤3000字），后续各段用参数 append:"true" 追加。';
 const CLAIM_MSG = '上一轮你声称已写入文件，但本次任务没有任何成功的 write_file 调用，该文件实际并不存在。请立即实际调用 write_file 完成写入（大文件分段：先写第一段，再以 append:"true" 逐段追加）；若确实无法写入，必须如实告知用户并说明原因，绝不允许声称已写入未写入的文件。' + CONSENT_NOTE;
-const READ_CLAIM_MSG = '上一轮你声称已读取了文件内容，但本次任务没有任何成功的 read_file 调用，那些「读到的内容」全部是编造的。请立即实际调用 list_dir 列目录、再逐份调用 read_file 读取（多文件就多轮调用，不要用「继续读」等叙述代替实际调用，大文件带 offset 逐段读完）；确实无法读取时如实说明，绝不允许编造读取结果。' + CONSENT_NOTE;
+const READ_CLAIM_MSG = '上一轮你声称已读取了文件内容，但本次任务没有任何成功的 read_file 调用，那些「读到的内容」全部是编造的。请立即实际调用 list_dir 列目录、再逐份调用 read_file 读取（图片文件用 read_image；多文件就多轮调用，不要用「继续读」等叙述代替实际调用，大文件带 offset 逐段读完）；确实无法读取时如实说明，绝不允许编造读取结果。' + CONSENT_NOTE;
 const SEARCH_CLAIM_MSG = '上一轮你声称已完成联网检索（如「我查了/网上的资料说/检索结果显示」），但本次任务没有任何成功的 web_search 调用，那些内容全部是编造的。请实际调用 web_search 执行检索（联网搜索未开启时，用户明确要求的检索首次调用会弹授权卡）；确实无法检索时如实说明原因，绝不允许编造检索结果或来源。' + CONSENT_NOTE;
 const PROG_COUNT_RE = /\[进展[:：]\s*(?:设计|发现|能力|验证)/g;
 
@@ -220,7 +220,10 @@ async function startRun(opts) {
   guard.setWriteMode(mode);
   // 通道（戏内/戏外）：见 channelOf。戏内轮结构性收权——文件类工具不下发，只有 web_search + save_memory
   const channel = channelOf(o.instruction);
+  // 多模态闸（read_image）：当前模型无图像输入能力时 schema 不下发（handler 内还有兜底闸防幻觉调用）
+  const visionOn = llm.isVisionCapable();
   let schemas = tools.openAiSchemas().filter(s => !(mode === 'read' && s.function.name === 'write_file'));
+  if (!visionOn) schemas = schemas.filter(s => s.function.name !== 'read_image');
   if (channel !== 'work') schemas = schemas.filter(s => ROLEPLAY_TOOLS.includes(s.function.name));
 
   const runId = runs.newRunId();
@@ -461,16 +464,26 @@ async function startRun(opts) {
       result = { ok: false, error: e.userMsg || e.message };
       logger.warn('agent 工具执行失败: ' + tc.name + ' → ' + (e.userMsg || e.message));
     }
-    if (ok && tc.name === 'read_file') executedReads++;
+    // read_image 专用通道：图像不能挂在 tool 消息上（OpenAI 协议 tool content 必须是字符串）——
+    // 图像剥离出来由上层以 user 消息的 image_url 部分注入；tool 消息只落文本回执
+    let imagePart = null, imageMeta = null;
+    if (ok && result && result.imagePart) {
+      imagePart = result.imagePart;
+      imageMeta = result.meta || {};
+      result = { ok: true, text: result.text };
+    }
+    if (ok && (tc.name === 'read_file' || tc.name === 'read_image')) executedReads++;
     // 成功检索 = handler 正常返回且业务 ok（被拦/被拒/失败的调用不算「查过」）
     if (ok && tc.name === 'web_search' && result && result.ok !== false) executedSearches++;
     const summary = tool.permission === 'write'
       ? `${args.path}（${Buffer.byteLength(String(args.content ?? ''), 'utf8')}B）`
       : tc.name === 'web_search'
         ? `${String(args.query || '').slice(0, 40)}（${args.track === 'autonomous' ? '自主轨' : '指定轨'}）`
-        : String(args.path || Object.values(args).find(v => typeof v === 'string' && v.trim()) || tc.name).slice(0, 60);
+        : tc.name === 'read_image'
+          ? `${String(args.path || '')}${imageMeta && imageMeta.width ? `（${imageMeta.width}×${imageMeta.height}${imageMeta.resized ? '，已缩放' : ''}）` : '（读取失败）'}`
+          : String(args.path || Object.values(args).find(v => typeof v === 'string' && v.trim()) || tc.name).slice(0, 60);
     step({ kind: 'tool', tool: tc.name, summary, ok });
-    return { ok, content: jstr(result, tools.RESULT_CAPS[tc.name] || 4000) };
+    return { ok, content: jstr(result, tools.RESULT_CAPS[tc.name] || 4000), imagePart, imageMeta };
   }
 
   // 正常收尾：差分归因 → 最终回复存史 → run 记录 → llm:done
@@ -646,6 +659,11 @@ async function startRun(opts) {
       };
       toolTurns.push(asstMsg);
       let needBreakMsg = false;
+      // read_image 图像轮内暂存：图像统一挂到「本轮全部 tool 回执之后」的一条 user 消息。
+      // 硬约束（20261011 实测 400）：assistant(tool_calls) 之后的 tool 消息块必须连续——
+      // 网关按「紧随的连续 tool run」核对每个 tool_call_id 的响应，逐调用插 user 消息会把
+      // tool 块劈开，多调用轮直接 400「insufficient tool messages following tool_calls message」。
+      const roundImages = [];
       for (const { tc, id } of calls) {
         if (isStale()) return;
         const out = await runTool(tc);
@@ -657,7 +675,25 @@ async function startRun(opts) {
           toolMeta.set(toolMsg, { tool: tc.name, path: a.path, chars: (out.content || '').length });
         } catch (_) {}
         toolTurns.push(toolMsg);
+        if (out.imagePart) roundImages.push({ part: out.imagePart, meta: out.imageMeta || {} });
         if (out.breakHint) needBreakMsg = true;
+      }
+      // 本轮图像统一注入：单条 user 消息（文本说明 + 全部 image_url 部分），
+      // 序列 assistant→tool×N→user(图×M)，每个 tool_call_id 都在 user 消息之前得到响应；
+      // 元数据（含像素尺寸，供压缩侧估算图像 token）走 WeakMap，不进消息体
+      if (roundImages.length) {
+        const list = roundImages.map(im => im.meta.path || '未知路径').join('；');
+        const imgMsg = {
+          role: 'user',
+          content: [
+            { type: 'text', text: `[系统·read_image] 上面工具调用的图像结果如下（共 ${roundImages.length} 张：${list}）。基于图像实际内容继续任务；图中没有的内容不要编造。` },
+            ...roundImages.map(im => im.part),
+          ],
+        };
+        try {
+          toolMeta.set(imgMsg, { tool: 'read_image', image: true, path: roundImages[0].meta.path, images: roundImages.map(im => im.meta) });
+        } catch (_) {}
+        toolTurns.push(imgMsg);
       }
       if (needBreakMsg) toolTurns.push({ role: 'system', content: DENY_BREAK_MSG });
     }
