@@ -295,7 +295,9 @@ function userAvatarHtml() {
     : icon('user', 16);
 }
 function assistantAvatarHtml() {
-  return `<img class="avatar-img" src="${ASSISTANT_AVATAR}" alt="缇托" draggable="false">`;
+  const a = avatarState && avatarState.assistant;
+  const src = a && a.path ? fileUrl(a.path) : ASSISTANT_AVATAR;
+  return `<img class="avatar-img" src="${esc(src)}" alt="缇托" draggable="false">`;
 }
 
 // ---------- 消息渲染 ----------

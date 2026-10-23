@@ -73,6 +73,13 @@ function avatarPreviewHtml(st) {
   return `<img src="file:///${String(u.path).replace(/\\/g, '/')}" alt="我的头像" draggable="false">`;
 }
 
+// 助手头像预览：未自定义时显示随包分发的默认 icon.png（settings/ → 仓库根）
+function assistantAvatarPreviewHtml(st) {
+  const a = st && st.assistant;
+  if (!a || !a.path) return '<img src="../../../icon.png" alt="默认助手头像" draggable="false">';
+  return `<img src="file:///${String(a.path).replace(/\\/g, '/')}" alt="助手头像" draggable="false">`;
+}
+
 async function renderPersona() {
   const [{ persona, status: seal }, avatarSt] = await Promise.all([
     dp.canonGet(),
@@ -87,6 +94,16 @@ async function renderPersona() {
   body.innerHTML = `<div class="set-section">
     <div class="card" id="profileCard" style="margin-bottom:18px">
       <div class="row"><b>宠物设定档案</b><span class="hint grow" style="margin-left:8px">人设 + 形象差分图 + 缩放绑定为完整设定；可保存多套、一键切换、导出 .pet.json 分享。全部角色（含导入）统一遵循 canon/ops/user 分层与锁层</span></div>
+      <div class="avatar-edit" style="margin:12px 0 4px">
+        <div class="avatar-preview" id="assistantAvatarPreview">${assistantAvatarPreviewHtml(avatarSt)}</div>
+        <div class="avatar-edit-main">
+          <div class="row" style="gap:8px">
+            <button class="btn btn-sm" id="assistantAvatarPick">${icon('upload', 14)} 上传助手头像</button>
+            <button class="btn btn-sm" id="assistantAvatarReset" ${avatarSt && avatarSt.assistant ? '' : 'disabled'}>恢复默认</button>
+          </div>
+          <p class="hint">显示在聊天窗每条回复旁；默认使用内置 icon.png。头像是本机外观设置，不写入人设、不会进入长期记忆。</p>
+        </div>
+      </div>
       <div class="row" style="margin:10px 0 4px">
         <input type="text" id="profName" placeholder="设定名称，如：缇托·日常版" style="width:210px">
         <button class="btn btn-sm btn-primary" id="profSave">${icon('save', 14)} 保存当前设定</button>
@@ -302,6 +319,28 @@ async function renderPersona() {
 
   const formEl = body.querySelector('#personaForm');
   formEl.querySelectorAll('input,textarea,select').forEach(el => el.addEventListener('input', el.id.startsWith('u-') ? onUserChange : onChange));
+  // ---- 助手头像（宠物设定档案内）：上传/恢复；聊天窗经 avatar:changed 即时刷新 ----
+  const asPreview = body.querySelector('#assistantAvatarPreview');
+  const asReset = body.querySelector('#assistantAvatarReset');
+  const paintAssistantAvatar = (st) => {
+    asPreview.innerHTML = assistantAvatarPreviewHtml(st);
+    asReset.disabled = !(st && st.assistant);
+  };
+  body.querySelector('#assistantAvatarPick').addEventListener('click', async () => {
+    try {
+      const st = await dp.avatarPickAssistant();
+      if (!st) return; // 用户取消选择
+      paintAssistantAvatar(st);
+      toast('助手头像已更新（聊天窗即时生效）', 'ok');
+    } catch (err) { toast(errText(err), 'error'); }
+  });
+  asReset.addEventListener('click', async () => {
+    try {
+      const st = await dp.avatarResetAssistant();
+      paintAssistantAvatar(st);
+      toast('已恢复默认助手头像', 'ok');
+    } catch (err) { toast(errText(err), 'error'); }
+  });
   // ---- 对话对象头像：上传/恢复（落盘在主进程数据目录，聊天窗经 avatar:changed 即时更新） ----
   const avPreview = body.querySelector('#userAvatarPreview');
   const avReset = body.querySelector('#userAvatarReset');

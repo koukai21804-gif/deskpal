@@ -14,7 +14,9 @@ const cases = [
   [/renderer[\\/]chat[\\/]app\.js$/i, 'chat/app.js', 'chat-topbar'],
   [/renderer[\\/]settings[\\/]settings\.css$/i, 'settings.css', '.nav-group-label'],
   [/^\\?icon\.png$/i, 'icon.png（助手头像）', 'PNG'],
-  [/services[\\/]avatars\.js$/i, 'avatars.js', 'setUserFromBuffer'],
+  [/services[\\/]avatars\.js$/i, 'avatars.js', 'assistant-avatar'],
+  [/renderer[\\/]chat[\\/]app\.js$/i, 'chat/app.js（助手头像）', 'avatarState.assistant'],
+  [/renderer[\\/]settings[\\/]app\.js$/i, 'settings/app.js（头像上传）', 'assistantAvatarPick'],
   [/services[\\/]agent[\\/]builtin\.js$/i, 'builtin.js', 'look_user_avatar'],
 ];
 

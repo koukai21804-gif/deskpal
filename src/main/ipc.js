@@ -404,6 +404,23 @@ function registerIpc() {
     windows.broadcastAll('avatar:changed', st);
     return st;
   });
+  // ---------- 助手头像（设置→人设→宠物设定档案；聊天窗每条回复旁显示） ----------
+  handle('avatar:pick-assistant', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: '选择助手头像图片',
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'] }],
+      properties: ['openFile'],
+    });
+    if (canceled || !filePaths || !filePaths[0]) return null;
+    const st = avatars.setAssistantFromPath(filePaths[0]);
+    windows.broadcastAll('avatar:changed', st);
+    return st;
+  });
+  handle('avatar:reset-assistant', () => {
+    const st = avatars.resetAssistant();
+    windows.broadcastAll('avatar:changed', st);
+    return st;
+  });
 
   // ---------- 形象 ----------
   handle('sprites:get', () => store.get('sprites'));  handle('sprites:upload', ({ emotion: emo, path: src }) => {

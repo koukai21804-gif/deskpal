@@ -1,5 +1,4 @@
-// 用户头像服务：设置页上传 → 数据目录 user/avatar.<ext>
-// 聊天窗用于消息头像；look_user_avatar 工具读取同一文件送入视觉上下文。
+// 头像服务：用户头像 + 助手头像（均落数据目录 user/，聊天窗直接显示，用户头像还可被视觉工具读取）
 // 校验看魔数不看扩展名；主进程有 nativeImage 时统一压到 ≤512px，避免大图白占内存与图像 token。
 const fs = require('fs');
 const path = require('path');
@@ -11,6 +10,10 @@ const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_SIDE = 512;
 const EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/bmp': 'bmp', 'image/gif': 'gif' };
 const REL = 'user';
+const KINDS = {
+  user: { file: 'avatar', label: '头像' },
+  assistant: { file: 'assistant-avatar', label: '助手头像' },
+};
 
 function dir() {
   const d = path.join(store.getDataDir() || '', REL);
@@ -22,8 +25,8 @@ function absOf(rel) { return rel ? path.join(store.getDataDir(), rel) : null; }
 
 function state() {
   const a = store.get('avatar') || {};
-  const u = a.user && a.user.file ? a.user : null;
-  return { user: u ? { ...u, path: absOf(u.file) } : null };
+  const norm = (x) => (x && x.file ? { ...x, path: absOf(x.file) } : null);
+  return { user: norm(a.user), assistant: norm(a.assistant) };
 }
 
 // 有 nativeImage 时按最长边缩放到 512 并统一转 PNG；纯 Node（单测）原样返回
@@ -54,7 +57,9 @@ function removeFile(rel) {
   try { fs.unlinkSync(absOf(rel)); } catch (_) { /* 已不存在 */ }
 }
 
-function setUserFromBuffer(input) {
+function setFromBuffer(kind, input) {
+  const meta = KINDS[kind];
+  if (!meta) throw new Error('未知头像类型');
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(input || []);
   if (!buf.length) throw new Error('图片内容为空');
   if (buf.length > MAX_BYTES) {
@@ -67,23 +72,23 @@ function setUserFromBuffer(input) {
   const ext = EXT[mime];
   if (!ext) throw new Error('不支持的图片格式');
   const probe = probeImage(fitted.buf, mime);
-  const relFile = `${REL}/avatar.${ext}`;
-  const old = state().user;
+  const relFile = `${REL}/${meta.file}.${ext}`;
+  const old = state()[kind];
   dir();
-  const dest = absOf(relFile);
-  fs.writeFileSync(dest, fitted.buf);
+  fs.writeFileSync(absOf(relFile), fitted.buf);
   if (old && old.file && old.file !== relFile) removeFile(old.file);
-  const user = {
+  const entry = {
     file: relFile, mime,
     width: probe.width || 0, height: probe.height || 0,
     bytes: fitted.buf.length,
     updatedAt: new Date().toISOString(),
   };
-  store.set('avatar', { user });
+  store.set('avatar', { [kind]: entry });
   return state();
 }
 
-function setUserFromPath(srcPath) {
+function setFromPath(kind, srcPath) {
+  if (!KINDS[kind]) throw new Error('未知头像类型');
   const p = String(srcPath || '').trim();
   if (!p) throw new Error('未选择图片');
   let st;
@@ -92,15 +97,24 @@ function setUserFromPath(srcPath) {
   if (st.size > MAX_BYTES) {
     throw new Error(`图片超过 ${Math.round(MAX_BYTES / 1024 / 1024)}MB（实际 ${(st.size / 1024 / 1024).toFixed(1)}MB），请先压缩后再试`);
   }
-  return setUserFromBuffer(fs.readFileSync(p));
+  return setFromBuffer(kind, fs.readFileSync(p));
 }
 
-function resetUser() {
-  const cur = state().user;
+function reset(kind) {
+  if (!KINDS[kind]) throw new Error('未知头像类型');
+  const cur = state()[kind];
   removeFile(cur && cur.file);
-  store.set('avatar', { user: null });
+  store.set('avatar', { [kind]: null });
   return state();
 }
+
+// 兼容旧调用
+function setUserFromBuffer(buf) { return setFromBuffer('user', buf); }
+function setUserFromPath(p) { return setFromPath('user', p); }
+function setAssistantFromBuffer(buf) { return setFromBuffer('assistant', buf); }
+function setAssistantFromPath(p) { return setFromPath('assistant', p); }
+function resetUser() { return reset('user'); }
+function resetAssistant() { return reset('assistant'); }
 
 // look_user_avatar 读取入口：{ buf, mime, file, path, width, height }；未上传/文件丢失 → null
 function readUserImage() {
@@ -117,4 +131,11 @@ function readUserImage() {
   }
 }
 
-module.exports = { state, setUserFromBuffer, setUserFromPath, resetUser, readUserImage, MAX_BYTES, MAX_SIDE };
+module.exports = {
+  state,
+  setFromBuffer, setFromPath, reset,
+  setUserFromBuffer, setUserFromPath, setAssistantFromBuffer, setAssistantFromPath,
+  resetUser, resetAssistant,
+  readUserImage,
+  MAX_BYTES, MAX_SIDE,
+};

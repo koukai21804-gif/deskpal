@@ -47,6 +47,14 @@ ok(store.get('avatar').user.file === 'user/avatar.png', '配置里只存相对�
 store.flushAll();
 ok(fs.existsSync(path.join(tmp, 'config', 'avatar.json')), 'config/avatar.json 已落盘');
 
+console.log('\n## 助手头像');
+const stA = avatars.setAssistantFromBuffer(fixture);
+ok(!!stA.assistant, '上传后 state.assistant 存在');
+ok(stA.assistant.file === 'user/assistant-avatar.png', '固定落盘到 user/assistant-avatar.png');
+ok(fs.existsSync(stA.assistant.path), '助手头像文件真实写入数据目录');
+ok(stA.user && stA.user.file === 'user/avatar.png', '上传助手头像不影响用户头像');
+ok(avatars.readUserImage().file === 'user/avatar.png', '助手头像不占用用户头像读取入口');
+
 console.log('\n## 聊天窗 / 视觉读取入口');
 const img = avatars.readUserImage();
 ok(!!img && img.buf.length > 0, 'readUserImage 返回图像字节');
@@ -72,6 +80,7 @@ llm.isVisionCapable = () => true;
   llm.isVisionCapable = () => true;
   avatars.resetUser();
   await throwsAsync(() => tools.invoke('look_user_avatar', {}, {}), /尚未上传头像/, '重置后调用如实报错');
+  ok(!!avatars.state().assistant, '重置用户头像不影响助手头像');
   llm.isVisionCapable = realVision;
 
   console.log('\n## 重置');
@@ -79,6 +88,11 @@ llm.isVisionCapable = () => true;
   ok(st2.user === null, '重置后 state.user 为 null');
   ok(!fs.existsSync(path.join(tmp, 'user', 'avatar.png')), '重置删除头像文件');
   ok(avatars.readUserImage() === null, '重置后 readUserImage 为 null');
+
+  const st3 = avatars.resetAssistant();
+  ok(st3.assistant === null, '重置助手头像后 state.assistant 为 null');
+  ok(!fs.existsSync(path.join(tmp, 'user', 'assistant-avatar.png')), '重置删除助手头像文件');
+  ok(avatars.state().user === null, '助手重置不复活用户头像');
 
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
   console.log(`\n========== 头像测试: ${passed} 通过, ${failed} 失败 ==========`);

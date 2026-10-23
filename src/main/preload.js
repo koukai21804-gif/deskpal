@@ -138,6 +138,8 @@ contextBridge.exposeInMainWorld('deskpal', {
   avatarGet: () => invoke('avatar:get', {}),
   avatarPickUser: () => invoke('avatar:pick-user', {}),
   avatarResetUser: () => invoke('avatar:reset-user', {}),
+  avatarPickAssistant: () => invoke('avatar:pick-assistant', {}),
+  avatarResetAssistant: () => invoke('avatar:reset-assistant', {}),
 
   // 形象
   spritesGet: () => invoke('sprites:get', {}),

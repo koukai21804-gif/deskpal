@@ -102,7 +102,7 @@ const DEFAULTS = {
     },
   },
   // 用户头像（设置→人设→对话对象上传；聊天窗消息头像 + look_user_avatar 视觉读取）
-  avatar: { user: null },
+  avatar: { user: null, assistant: null },
   // canon 封存（canon.js 独立守护）：版本号 / 各锁组哈希 / 批准时点 canon 快照（篡改恢复源）/
   // provenance 历史 / HMAC 防协同篡改 / 签署状态机（risk note R1/R2）。version=0 表示未封存。
   'canon/seal': { version: 0, doc: 'TITOR-CANON v1.0', sealedAt: null, hashes: {}, snapshot: null, history: [], status: 'draft', approvedBy: null, approvedAt: null, hmac: null },
