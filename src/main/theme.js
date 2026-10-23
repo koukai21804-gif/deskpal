@@ -10,29 +10,42 @@ const PRESETS = [
   { name: '落日橙', accent: '#E8A33D' },
 ];
 
+const FG_DARK = '#0F1419';
+const FG_LIGHT = '#FFFFFF';
+
 function hexToRgb(hex) {
-  const h = hex.replace('#', '');
+  const h = String(hex || '').replace('#', '');
   return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
 }
-function rgbToHsl(r, g, b) {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  let h = 0, s = 0; const l = (max + min) / 2;
-  if (max !== min) {
-    const d = max - min;
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-    else if (max === g) h = ((b - r) / d + 2) / 6;
-    else h = ((r - g) / d + 4) / 6;
-  }
-  return [h, s, l];
+
+// WCAG 2.1 相对亮度：按人眼敏感度加权，不用 HSL 亮度近似（后者对黄绿橙系统性高估）
+function srgbToLinear(c) {
+  const s = c / 255;
+  return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+}
+function relLuminance([r, g, b]) {
+  return 0.2126 * srgbToLinear(r) + 0.7152 * srgbToLinear(g) + 0.0722 * srgbToLinear(b);
+}
+function contrast(l1, l2) {
+  const hi = Math.max(l1, l2), lo = Math.min(l1, l2);
+  return (hi + 0.05) / (lo + 0.05);
+}
+// 给定背景 hex，返回对比度更高的前景色（正文 AA 4.5:1 判据）
+function pickFg(hex) {
+  const bg = relLuminance(hexToRgb(hex));
+  const dark = relLuminance(hexToRgb(FG_DARK));
+  const light = relLuminance(hexToRgb(FG_LIGHT));
+  return contrast(bg, dark) >= contrast(bg, light) ? FG_DARK : FG_LIGHT;
+}
+
+function normalizeAccent(accent) {
+  return /^#[0-9a-f]{6}$/i.test(String(accent || '')) ? accent : PRESETS[0].accent;
 }
 
 function buildTheme(patch) {
   const t = { ...store.get('settings').theme, ...patch };
-  const [r, g, b] = hexToRgb(t.accent);
-  const [, , l] = rgbToHsl(r, g, b);
-  t.accentFg = l > 0.62 ? '#222233' : '#ffffff';
+  t.accent = normalizeAccent(t.accent);
+  t.accentFg = pickFg(t.accent);
   t.mode = t.mode || 'light';
   return t;
 }
@@ -40,6 +53,7 @@ function buildTheme(patch) {
 function current() { return buildTheme({}); }
 
 function set(patch) {
+  if (patch && patch.accent !== undefined) patch = { ...patch, accent: normalizeAccent(patch.accent) };
   store.set('settings', { theme: patch });
   broadcast();
   return current();
@@ -52,4 +66,4 @@ function broadcast() {
   }
 }
 
-module.exports = { current, set, broadcast, PRESETS };
+module.exports = { current, set, broadcast, PRESETS, pickFg, contrast, relLuminance, hexToRgb };

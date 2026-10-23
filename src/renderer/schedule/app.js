@@ -2,6 +2,7 @@
 import { dp, initTheme, esc, errText } from '../common/ipc.js';
 import { openModal, toast, confirmBox } from '../common/ui.js';
 import { mountTitlebar } from '../common/windows/titlebar.js';
+import { icon } from '../common/icons.js';
 
 const app = document.getElementById('app');
 app.appendChild(mountTitlebar('deskpal · 日程'));
@@ -13,9 +14,9 @@ root.innerHTML = `
     <div>
       <div class="quick-add">
         <input type="text" id="qaInput" placeholder="试试：明天晚上18点我要跟女朋友约会">
-        <button class="btn btn-primary" id="qaAdd">➕ 添加</button>
-        <button class="btn" id="formAdd">📋 表单添加</button>
-        <button class="btn" id="xlAdd">📄 导入 Excel</button>
+        <button class="btn btn-primary" id="qaAdd">${icon('plus', 14)} 添加</button>
+        <button class="btn" id="formAdd">${icon('file', 14)} 表单添加</button>
+        <button class="btn" id="xlAdd">${icon('upload', 14)} 导入 Excel</button>
       </div>
       <div class="hint qa-tip" id="qaTip">说一句话就行：我会解析出时间并按类型自动设好提醒（事件提前 60 分钟、任务截止提前 120 分钟，可在设置调整）；也支持重复：试试「每天9点提醒我喝水」</div>
     </div>
@@ -60,7 +61,7 @@ async function quickAdd(text) {
       root.querySelector('#qaTip').textContent = '解析成功，确认一下就入库～';
     } else if (r.question) {
       const tip = root.querySelector('#qaTip');
-      tip.textContent = '🤔 ' + r.question;
+      tip.textContent = '需要确认：' + r.question;
       tip.style.color = 'var(--dp-warn)';
     } else {
       toast('这句话像是在安排日程吗？试试「明天下午3点开会」这样的说法', 'warn');
@@ -85,8 +86,8 @@ function openConfirmCard(ev, { fromParse = false, onSave } = {}) {
       <div class="field full"><span class="label">标题</span><input type="text" id="f-title" value="${esc(ev.title || '')}" maxlength="30"></div>
       <div class="field"><span class="label">类型</span>
         <select id="f-kind">
-          <option value="event" ${kind === 'event' ? 'selected' : ''}>📅 事件（约会/会议/外出）</option>
-          <option value="task" ${kind === 'task' ? 'selected' : ''}>⚡ 任务（有开始/截止的工作）</option>
+          <option value="event" ${kind === 'event' ? 'selected' : ''}>事件（约会/会议/外出）</option>
+          <option value="task" ${kind === 'task' ? 'selected' : ''}>任务（有开始/截止的工作）</option>
         </select></div>
       <div class="field"><span class="label">提醒预设</span>
         <select id="f-preset">
@@ -102,9 +103,9 @@ function openConfirmCard(ev, { fromParse = false, onSave } = {}) {
       <div class="field"><span class="label">重复</span>
         <select id="f-repeat">
           <option value="none" ${!ev.repeat || ev.repeat === 'none' ? 'selected' : ''}>不重复</option>
-          <option value="daily" ${ev.repeat === 'daily' ? 'selected' : ''}>🔁 每天</option>
-          <option value="weekdays" ${ev.repeat === 'weekdays' ? 'selected' : ''}>🔁 每个工作日</option>
-          <option value="weekly" ${ev.repeat === 'weekly' ? 'selected' : ''}>🔁 每周</option>
+          <option value="daily" ${ev.repeat === 'daily' ? 'selected' : ''}>每天</option>
+          <option value="weekdays" ${ev.repeat === 'weekdays' ? 'selected' : ''}>每个工作日</option>
+          <option value="weekly" ${ev.repeat === 'weekly' ? 'selected' : ''}>每周</option>
         </select></div>
       <div class="field"><span class="label">备注</span><input type="text" id="f-notes" value="${esc(ev.notes || '')}" maxlength="100"></div>
     </div>
@@ -239,16 +240,22 @@ function renderWeekStrip() {
   host.innerHTML = days.map((d, i) => {
     const key = ymd(d);
     const n = events.filter(e => e.status === 'pending' && [e.start, e.deadline].some(x => x && ymd(x) === key)).length;
-    return `<div class="day-chip ${dayFilter === key ? 'active' : ''}" data-day="${key}">
+    return `<div class="day-chip ${dayFilter === key ? 'active' : ''}" data-day="${key}" role="button" tabindex="0" aria-pressed="${dayFilter === key}">
       <div>${i === 0 ? '今天' : i === 1 ? '明天' : '周' + WEEK_CN[d.getDay()]}</div>
       <div class="d-num">${d.getDate()}</div>
       <div class="d-dot">${n ? `<div style="width:${Math.min(34, 6 + n * 8)}px"></div>` : ''}</div>
     </div>`;
   }).join('');
-  host.querySelectorAll('.day-chip').forEach(c => c.addEventListener('click', () => {
-    dayFilter = dayFilter === c.dataset.day ? null : c.dataset.day;
+  const toggleDay = (el) => {
+    dayFilter = dayFilter === el.dataset.day ? null : el.dataset.day;
     renderWeekStrip(); renderList();
-  }));
+  };
+  host.querySelectorAll('.day-chip').forEach(c => {
+    c.addEventListener('click', () => toggleDay(c));
+    c.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleDay(c); }
+    });
+  });
 }
 
 function renderList() {
@@ -277,15 +284,15 @@ function renderList() {
     const items = active.filter(e => !used.has(e.id) && g.match(e));
     if (!items.length) continue;
     items.forEach(e => used.add(e.id));
-    html += `<div class="group-title">🗓 ${g.name}（${items.length}）</div>` + items.map(cardHTML).join('');
+    html += `<div class="group-title">${icon('calendar', 13)} ${g.name}（${items.length}）</div>` + items.map(cardHTML).join('');
   }
   const rest = active.filter(e => !used.has(e.id));
-  if (rest.length) html += `<div class="group-title">🗓 无具体时间</div>` + rest.map(cardHTML).join('');
+  if (rest.length) html += `<div class="group-title">${icon('calendar', 13)} 无具体时间</div>` + rest.map(cardHTML).join('');
 
   const doneList = visible.filter(e => e.status === 'done');
-  if (doneList.length) html += `<div class="group-title" style="cursor:pointer" id="toggleDone">✅ 已完成（${doneList.length}）▸</div><div id="doneList" style="display:none">${doneList.map(cardHTML).join('')}</div>`;
+  if (doneList.length) html += `<div class="group-title" style="cursor:pointer" id="toggleDone">${icon('checkCircle', 13)} 已完成（${doneList.length}）${icon('chevronR', 12)}</div><div id="doneList" style="display:none">${doneList.map(cardHTML).join('')}</div>`;
   const cancelList = visible.filter(e => e.status === 'cancelled');
-  if (cancelList.length) html += `<div class="group-title">🚫 已取消（${cancelList.length}）</div>` + cancelList.map(cardHTML).join('');
+  if (cancelList.length) html += `<div class="group-title">${icon('xCircle', 13)} 已取消（${cancelList.length}）</div>` + cancelList.map(cardHTML).join('');
 
   host.innerHTML = html || `<div class="empty">${dayFilter ? '这一天没有安排' : '还没有日程。说一句话试试：「明天晚上18点我要跟女朋友约会」'}</div>`;
 
@@ -296,7 +303,7 @@ function renderList() {
     const ev = events.find(x => x.id === id);
     const act = btn.dataset.act;
     if (act === 'edit') openConfirmCard(ev, { onSave: true });
-    if (act === 'done') { await dp.scheduleDone(id); toast('已完成 ✓', 'ok'); refresh(); }
+    if (act === 'done') { await dp.scheduleDone(id); toast('已完成', 'ok'); refresh(); }
     if (act === 'del') {
       if (await confirmBox(`删除日程「${ev.title}」？`, { danger: true, okText: '删除' })) {
         await dp.scheduleDelete(id); refresh();
@@ -318,19 +325,19 @@ function cardHTML(e) {
   const repeatMap = { daily: '每天', weekdays: '工作日', weekly: '每周' };
   return `<div class="ev-card card ${e.status === 'done' ? 'done' : ''}" data-id="${e.id}">
     <div class="l1">
-      <span class="badge ${e.kind}">${e.kind === 'task' ? '⚡任务' : '📅事件'}</span>
-      ${e.repeat && e.repeat !== 'none' ? `<span class="badge repeat">🔁${repeatMap[e.repeat] || e.repeat}</span>` : ''}
+      <span class="badge ${e.kind}">${e.kind === 'task' ? icon('bolt', 11) + '任务' : icon('calendar', 11) + '事件'}</span>
+      ${e.repeat && e.repeat !== 'none' ? `<span class="badge repeat">${icon('refresh', 11)}${repeatMap[e.repeat] || e.repeat}</span>` : ''}
       <span class="ev-title">${esc(e.title)}</span>
       ${e.status === 'pending' ? `
       <button class="btn btn-sm" data-act="edit">编辑</button>
       <button class="btn btn-sm" data-act="done">完成</button>
-      <button class="btn btn-sm btn-icon" data-act="del">🗑</button>` : ''}
+      <button class="btn btn-sm btn-icon" data-act="del" title="删除">${icon('trash', 15)}</button>` : ''}
     </div>
     <div class="l2">
       <span>${timeText}${e.durationMin ? ` · ${e.durationMin}分钟` : ''}</span>
       ${(e.reminders || []).map(r => `<span class="rem-chip ${r.status}" title="${fmt(r.at)}">${esc(r.label)}·${fmt(r.at)}</span>`).join('')}
       ${e.source ? `<span class="badge">${srcMap[e.source] || e.source}</span>` : ''}
-      ${e.notes ? `<span>📝 ${esc(e.notes)}</span>` : ''}
+      ${e.notes ? `<span>${icon('pencil', 11)} ${esc(e.notes)}</span>` : ''}
     </div>
   </div>`;
 }

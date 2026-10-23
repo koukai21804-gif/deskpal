@@ -3,6 +3,7 @@ import { dp, initTheme, esc, errText, fmtMin } from '../common/ipc.js';
 import { renderMD } from '../common/md.js';
 import { toast } from '../common/ui.js';
 import { mountTitlebar } from '../common/windows/titlebar.js';
+import { icon } from '../common/icons.js';
 
 const app = document.getElementById('app');
 app.appendChild(mountTitlebar('deskpal · 时间统计'));
@@ -12,13 +13,13 @@ root.className = 'time-wrap';
 root.innerHTML = `
   <div class="time-toolbar">
     <div class="tabs" style="border:0;padding:0;background:transparent">
-      <div class="tab active" data-r="today">今日</div>
-      <div class="tab" data-r="week">本周</div>
+      <div class="tab active" data-r="today" role="tab" tabindex="0" aria-selected="true">今日</div>
+      <div class="tab" data-r="week" role="tab" tabindex="0" aria-selected="false">本周</div>
     </div>
     <span class="grow"></span>
-    <button class="btn btn-sm" id="labelBtn">🏷 标注未知应用</button>
+    <button class="btn btn-sm" id="labelBtn">${icon('tag', 14)} 标注未知应用</button>
     <button class="btn btn-sm" id="pauseBtn"></button>
-    <button class="btn btn-sm btn-primary" id="reportBtn">🤖 AI 时间报告</button>
+    <button class="btn btn-sm btn-primary" id="reportBtn">${icon('sparkle', 14)} AI 时间报告</button>
   </div>
   <div class="time-body" id="body"></div>`;
 app.appendChild(root);
@@ -44,7 +45,7 @@ async function refresh() {
 
     ${s.unknownCount ? `
     <div class="unknown-bar">
-      <span>🏷 有 <b>${s.unknownCount}</b> 个应用还不知道是什么类型，标注后统计更准确</span>
+      <span>${icon('tag', 14)} 有 <b>${s.unknownCount}</b> 个应用还不知道是什么类型，标注后统计更准确</span>
       <span class="grow"></span>
       <button class="btn btn-sm btn-primary" id="labelNow">去标注</button>
     </div>` : ''}
@@ -61,7 +62,7 @@ async function refresh() {
     </div>
 
     <div class="card">
-      <div style="font-weight:600;margin-bottom:6px">📊 类别占比（共 ${fmtMin(catTotal)}）</div>
+      <div style="font-weight:600;margin-bottom:6px">${icon('chart', 14)} 类别占比（共 ${fmtMin(catTotal)}）</div>
       ${s.categories.length ? s.categories.map(c => `
         <div class="rank-row">
           <span class="cat-chip">${esc(c.name)}</span>
@@ -71,7 +72,7 @@ async function refresh() {
     </div>
 
     <div class="card">
-      <div style="font-weight:600;margin-bottom:6px">📱 应用排行</div>
+      <div style="font-weight:600;margin-bottom:6px">${icon('layers', 14)} 应用排行</div>
       ${s.apps.length ? s.apps.slice(0, 15).map(a => `
         <div class="rank-row" title="${esc(a.topTitle || '')}">
           <span class="app-name">${esc(a.app)} ${a.category ? `<span class="cat-chip">${esc(a.category)}</span>` : '<span class="cat-chip" style="color:var(--dp-warn)">未标注</span>'}</span>
@@ -81,7 +82,7 @@ async function refresh() {
     </div>
 
     <div class="report-view" id="reportView" style="display:none">
-      <div class="row" style="margin-bottom:8px"><b>🤖 AI 时间报告</b><span class="grow"></span><button class="btn btn-sm" id="reportStop">停止</button></div>
+      <div class="row" style="margin-bottom:8px"><b>${icon('sparkle', 14)} AI 时间报告</b><span class="grow"></span><button class="btn btn-sm" id="reportStop">停止</button></div>
       <div class="report-md md" id="reportMd"></div>
     </div>`;
 
@@ -92,11 +93,21 @@ async function refresh() {
 }
 
 // ---------- 工具栏 ----------
-root.querySelectorAll('.tab[data-r]').forEach(t => t.addEventListener('click', () => {
-  range = t.dataset.r;
-  root.querySelectorAll('.tab[data-r]').forEach(x => x.classList.toggle('active', x.dataset.r === range));
-  refresh().catch(err => toast(errText(err), 'error'));
-}));
+root.querySelectorAll('.tab[data-r]').forEach(t => {
+  const pick = () => {
+    range = t.dataset.r;
+    root.querySelectorAll('.tab[data-r]').forEach(x => {
+      const on = x.dataset.r === range;
+      x.classList.toggle('active', on);
+      x.setAttribute('aria-selected', String(on));
+    });
+    refresh().catch(err => toast(errText(err), 'error'));
+  };
+  t.addEventListener('click', pick);
+  t.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); }
+  });
+});
 
 root.querySelector('#labelBtn').addEventListener('click', () => dp.timeOpenLabel());
 root.querySelector('#pauseBtn').addEventListener('click', async () => {

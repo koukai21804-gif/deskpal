@@ -1,0 +1,95 @@
+<!doctype html>
+<!-- 摄像头采集页（look_camera 工具专用，不进任何导航面）：隐藏窗口加载，
+     主进程经 executeJavaScript 调 window.__dpCamCapture({index, warmup}) 取一帧 JPEG dataURL。
+     页面只负责「拍」：黑帧判定/缩放/授权都在主进程（vision-capture.js）统一做。
+     file:// 属安全上下文（Chromium 视 file 为 potentially trustworthy），getUserMedia 可用。 -->
+<html>
+<body>
+<script>
+(function () {
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  async function openStream(idx) {
+    var md = navigator.mediaDevices;
+    var devices = [];
+    try { devices = (await md.enumerateDevices()).filter(function (d) { return d.kind === 'videoinput'; }); } catch (_) {}
+    var video;
+    if (idx > 0 && devices.length && devices[idx] && devices[idx].deviceId) {
+      // 指定序号：先默认开一次拿授权（enumerate 在授权前 deviceId 为空），再按 deviceId 精确开
+      var warm = await md.getUserMedia({ video: true, audio: false });
+      warm.getTracks().forEach(function (t) { t.stop(); });
+      try { devices = (await md.enumerateDevices()).filter(function (d) { return d.kind === 'videoinput'; }); } catch (_) {}
+      if (!devices[idx]) throw new Error('摄像头序号超出范围：本机共 ' + devices.length + ' 个（序号 0–' + (devices.length - 1) + '）');
+      video = { deviceId: { exact: devices[idx].deviceId } };
+    } else {
+      video = {};
+    }
+    var base = { width: { ideal: 1280 }, height: { ideal: 720 } };
+    var stream = await md.getUserMedia({ video: Object.keys(video).length ? Object.assign({}, video, base) : base, audio: false });
+    try { devices = (await md.enumerateDevices()).filter(function (d) { return d.kind === 'videoinput'; }); } catch (_) {}
+    return { stream: stream, devices: devices };
+  }
+
+  window.__dpCamCapture = async function (opts) {
+    opts = opts || {};
+    var out = { ok: false, error: '', name: '', deviceLabel: '', deviceCount: 0, width: 0, height: 0, dataUrl: '' };
+    var stream = null;
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        out.error = '当前环境不支持摄像头（mediaDevices 不可用）';
+        return out;
+      }
+      var idx = Number.isFinite(+opts.index) && +opts.index >= 0 ? Math.round(+opts.index) : 0;
+      var opened = await openStream(idx);
+      stream = opened.stream;
+      out.deviceCount = opened.devices.length;
+
+      var video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.srcObject = stream;
+      await video.play();
+      if (video.readyState < 2) {
+        await new Promise(function (res) {
+          video.addEventListener('loadeddata', res, { once: true });
+          setTimeout(res, 3000);
+        });
+      }
+      await sleep(120); // 自动曝光起步
+      var track = stream.getVideoTracks()[0];
+      var st = track && track.getSettings ? (track.getSettings() || {}) : {};
+      var w = video.videoWidth || st.width || 1280;
+      var h = video.videoHeight || st.height || 720;
+      if (!w || !h) { out.error = '摄像头未返回有效画面尺寸'; return out; }
+
+      var canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      var ctx = canvas.getContext('2d', { willReadFrequently: true });
+      // 预热帧：连采多帧取最后一张（首帧普遍曝光不足——Amadeus capture_camera 同款做法）
+      var warmup = Math.max(3, Number.isFinite(+opts.warmup) ? Math.round(+opts.warmup) : 10);
+      for (var i = 0; i < warmup; i++) {
+        await sleep(45);
+        if (video.videoWidth) { w = video.videoWidth; h = video.videoHeight; canvas.width = w; canvas.height = h; }
+        ctx.drawImage(video, 0, 0, w, h);
+      }
+      out.dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+      out.width = w; out.height = h;
+      out.deviceLabel = (opened.devices[idx] && opened.devices[idx].label) || (track && track.label) || '';
+      out.ok = true;
+      return out;
+    } catch (e) {
+      out.name = (e && e.name) || '';
+      out.error = String((e && e.message) || e);
+      if (/NotAllowedError|Permission/i.test(out.error) || out.name === 'NotAllowedError') out.error = '摄像头权限被拒绝';
+      if (out.name === 'NotFoundError' || /no camera|找不到/i.test(out.error)) out.error = '未找到可用摄像头';
+      if (out.name === 'NotReadableError') out.error = '摄像头被其他程序占用';
+      return out;
+    } finally {
+      // 拍完立即停流（摄像头指示灯即灭）；窗口随后由主进程销毁
+      if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+    }
+  };
+})();
+</script>
+</body>
+</html>

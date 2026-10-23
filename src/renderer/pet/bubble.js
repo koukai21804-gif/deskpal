@@ -1,5 +1,6 @@
 // 气泡组件：队列化展示；text 类自动消失，card 类停留至点击；同屏最多 1 张
 import { dp } from '../common/ipc.js';
+import { icon } from '../common/icons.js';
 
 const host = document.createElement('div');
 host.className = 'dp-bubble-host';
@@ -47,7 +48,7 @@ function next() {
   if (b.kind === 'schedule-card') {
     el.className = 'dp-bubble schedule-card';
     el.innerHTML = `
-      <div class="sc-title">📅 ${esc(b.title)}</div>
+      <div class="sc-title">${icon('calendar', 13)} ${esc(b.title)}</div>
       <div class="sc-time">${esc(b.label)} · ${esc(b.timeText)}${b.nth ? `（第 ${b.nth + 1} 次提醒）` : ''}</div>
       <div class="b-actions">
         <button data-a="dismiss" class="primary">知道了</button>
@@ -80,9 +81,9 @@ function next() {
     });
     current = { el, kind: 'ask-label' };
   } else if (b.kind === 'perm-ask') {
-    // ★H 写权限批准：点击「去批准」聚焦聊天窗；超时自动消失（权限卡本身有倒计时）
+    // H 写权限批准：点击「去批准」聚焦聊天窗；超时自动消失（权限卡本身有倒计时）
     el.className = 'dp-bubble';
-    el.innerHTML = `<div class="b-text">🛡 ${esc(b.text || '有个文件操作需要你批准')}</div>
+    el.innerHTML = `<div class="b-text">${icon('shield', 14)} ${esc(b.text || '有个文件操作需要你批准')}</div>
       <div class="b-actions"><button data-a="go" class="primary">去批准</button></div>`;
     el.addEventListener('click', (e) => {
       const a = e.target.dataset && e.target.dataset.a;

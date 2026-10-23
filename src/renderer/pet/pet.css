@@ -47,35 +47,42 @@ body { display: flex; flex-direction: column; }
   display: flex; justify-content: center; pointer-events: none;
 }
 .dp-bubble {
-  pointer-events: auto; max-width: 250px; min-width: 60px;
-  background: var(--dp-panel); color: var(--dp-text);
-  border: 1px solid var(--dp-border); border-radius: 12px;
-  padding: 9px 12px; font-size: 13px; line-height: 1.5;
-  box-shadow: var(--dp-shadow); position: relative;
-  animation: dp-bubble-in .18s ease-out; user-select: none;
+  pointer-events: auto; max-width: 260px; min-width: 64px;
+  background: var(--dp-surface); color: var(--dp-text);
+  border: 1px solid var(--dp-border); border-radius: 14px;
+  padding: 10px 14px; font-size: var(--dp-fs-13); line-height: var(--dp-lh-14);
+  box-shadow: var(--dp-e2); position: relative; user-select: none;
+  transition: opacity var(--dp-dur-2) var(--dp-ease-out), transform var(--dp-dur-2) var(--dp-ease-out);
 }
+@starting-style { .dp-bubble { opacity: 0; transform: translateY(6px) scale(.96); } }
 .dp-bubble::after {
-  content: ''; position: absolute; bottom: -7px; left: 50%; margin-left: -7px;
-  width: 12px; height: 12px; background: var(--dp-panel);
+  content: ''; position: absolute; bottom: -6px; left: 50%; margin-left: -6px;
+  width: 11px; height: 11px; background: var(--dp-surface);
   border-right: 1px solid var(--dp-border); border-bottom: 1px solid var(--dp-border);
-  transform: rotate(45deg);
+  transform: rotate(45deg); border-radius: 0 0 3px 0;
 }
-@keyframes dp-bubble-in { from { opacity: 0; transform: translateY(6px) scale(.96); } to { opacity: 1; transform: none; } }
 .dp-bubble .b-text { user-select: none; white-space: pre-wrap; }
+.dp-bubble .b-text .dp-ic { color: var(--dp-accent); margin-right: 2px; }
 
 /* 询问类气泡带按钮 */
-.dp-bubble .b-actions { display: flex; gap: 6px; margin-top: 8px; }
+.dp-bubble .b-actions { display: flex; gap: var(--dp-s-3); margin-top: var(--dp-s-4); flex-wrap: wrap; }
 .dp-bubble .b-actions button {
-  font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
-  border: 1px solid var(--dp-border); background: var(--dp-panel-2); color: var(--dp-text);
+  font-size: var(--dp-fs-12); line-height: var(--dp-lh-12);
+  height: var(--dp-h-sm); padding: 0 10px; border-radius: var(--dp-r-sm); cursor: pointer;
+  border: 1px solid var(--dp-border); background: var(--dp-surface-2); color: var(--dp-text);
 }
-.dp-bubble .b-actions button.primary { background: var(--dp-accent); color: var(--dp-accent-fg); border-color: transparent; }
+.dp-bubble .b-actions button.primary { background: var(--dp-accent); color: var(--dp-accent-fg); border-color: transparent; font-weight: 600; }
 
 /* 日程提醒卡 */
-.dp-bubble.schedule-card { max-width: 240px; }
-.dp-bubble.schedule-card .sc-title { font-weight: 700; font-size: 13.5px; margin-bottom: 2px; }
-.dp-bubble.schedule-card .sc-time { font-size: 12px; color: var(--dp-accent); margin-bottom: 8px; }
-.dp-bubble.schedule-card .b-actions { flex-wrap: wrap; }
+.dp-bubble.schedule-card { max-width: 260px; }
+.dp-bubble.schedule-card .sc-title {
+  display: flex; align-items: center; gap: var(--dp-s-3);
+  font-weight: 700; font-size: var(--dp-fs-13); line-height: var(--dp-lh-13); margin-bottom: 2px;
+}
+.dp-bubble.schedule-card .sc-title .dp-ic { color: var(--dp-accent); }
+.dp-bubble.schedule-card .sc-time {
+  font-size: var(--dp-fs-12); line-height: var(--dp-lh-12); color: var(--dp-text-3); margin-bottom: var(--dp-s-4);
+}
 
 /* 表情切换调试点（验收用，底部一排小圆点） */
 .dp-emodots { display: none; gap: 6px; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); }

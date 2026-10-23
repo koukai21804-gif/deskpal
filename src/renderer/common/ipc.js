@@ -9,7 +9,8 @@ export function applyTheme(theme) {
   if (!theme) return;
   themeState = theme;
   const root = document.documentElement;
-  root.style.setProperty('--dp-accent', theme.accent);
+  const accent = /^#[0-9a-f]{6}$/i.test(theme.accent || '') ? theme.accent : '#7DBE3C';
+  root.style.setProperty('--dp-accent', accent);
   root.style.setProperty('--dp-accent-fg', theme.accentFg || '#fff');
   let mode = theme.mode || 'light';
   if (mode === 'system') {

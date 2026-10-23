@@ -70,7 +70,12 @@ function channelOf(instruction) {
   return WORK_CHANNEL_RE.test(String(instruction || '')) ? 'work' : 'roleplay';
 }
 // 戏内轮仅存的工具：web_search（授权卡照旧）+ save_memory（角色自身认知通道）
-const ROLEPLAY_TOOLS = ['web_search', 'save_memory'];
+// + look_screen / look_camera（角色的「眼睛」——看屏幕/开摄像头本就是戏内自然感官，
+//   授权卡照旧：桌面首次开启卡、摄像头逐次卡，隐私闸不因通道放宽）
+// + look_user_avatar（看用户自己上传的头像——用户明确用于让角色看到的图，无需授权卡）
+const ROLEPLAY_TOOLS = ['web_search', 'save_memory', 'look_screen', 'look_camera', 'look_user_avatar'];
+// 多模态工具族：模型无图像输入能力时 schema 一律不下发（handler 内还有兜底闸防幻觉调用）
+const VISION_TOOLS = ['read_image', 'look_screen', 'look_camera', 'look_user_avatar'];
 
 // ---- 跨轮引用豁免（v0.4.0-dev.3 事故修正：任务完成后的闲聊轮被守卫误判 → 角色无法回戏）----
 // 实测事故链：对话历史只存 clean 回复、不存工具凭据 → 用户表扬轮里角色引用上一轮真实成果
@@ -220,10 +225,11 @@ async function startRun(opts) {
   guard.setWriteMode(mode);
   // 通道（戏内/戏外）：见 channelOf。戏内轮结构性收权——文件类工具不下发，只有 web_search + save_memory
   const channel = channelOf(o.instruction);
-  // 多模态闸（read_image）：当前模型无图像输入能力时 schema 不下发（handler 内还有兜底闸防幻觉调用）
+  // 多模态闸（read_image / look_screen / look_camera）：当前模型无图像输入能力时 schema 不下发
+  // （handler 内还有兜底闸防幻觉调用）
   const visionOn = llm.isVisionCapable();
   let schemas = tools.openAiSchemas().filter(s => !(mode === 'read' && s.function.name === 'write_file'));
-  if (!visionOn) schemas = schemas.filter(s => s.function.name !== 'read_image');
+  if (!visionOn) schemas = schemas.filter(s => !VISION_TOOLS.includes(s.function.name));
   if (channel !== 'work') schemas = schemas.filter(s => ROLEPLAY_TOOLS.includes(s.function.name));
 
   const runId = runs.newRunId();
@@ -472,15 +478,15 @@ async function startRun(opts) {
       imageMeta = result.meta || {};
       result = { ok: true, text: result.text };
     }
-    if (ok && (tc.name === 'read_file' || tc.name === 'read_image')) executedReads++;
+    if (ok && (tc.name === 'read_file' || VISION_TOOLS.includes(tc.name))) executedReads++;
     // 成功检索 = handler 正常返回且业务 ok（被拦/被拒/失败的调用不算「查过」）
     if (ok && tc.name === 'web_search' && result && result.ok !== false) executedSearches++;
     const summary = tool.permission === 'write'
       ? `${args.path}（${Buffer.byteLength(String(args.content ?? ''), 'utf8')}B）`
       : tc.name === 'web_search'
         ? `${String(args.query || '').slice(0, 40)}（${args.track === 'autonomous' ? '自主轨' : '指定轨'}）`
-        : tc.name === 'read_image'
-          ? `${String(args.path || '')}${imageMeta && imageMeta.width ? `（${imageMeta.width}×${imageMeta.height}${imageMeta.resized ? '，已缩放' : ''}）` : '（读取失败）'}`
+        : imageMeta
+          ? `${imageMeta.path || tc.name}${imageMeta.width ? `（${imageMeta.width}×${imageMeta.height}${imageMeta.resized ? '，已缩放' : ''}）` : '（捕获失败）'}`
           : String(args.path || Object.values(args).find(v => typeof v === 'string' && v.trim()) || tc.name).slice(0, 60);
     step({ kind: 'tool', tool: tc.name, summary, ok });
     return { ok, content: jstr(result, tools.RESULT_CAPS[tc.name] || 4000), imagePart, imageMeta };
@@ -682,16 +688,18 @@ async function startRun(opts) {
       // 序列 assistant→tool×N→user(图×M)，每个 tool_call_id 都在 user 消息之前得到响应；
       // 元数据（含像素尺寸，供压缩侧估算图像 token）走 WeakMap，不进消息体
       if (roundImages.length) {
+        // 标签按实际产出图像的工具（read_image / look_screen / look_camera），混合时取首个
+        const visTool = String(roundImages[0].meta.tool || 'read_image');
         const list = roundImages.map(im => im.meta.path || '未知路径').join('；');
         const imgMsg = {
           role: 'user',
           content: [
-            { type: 'text', text: `[系统·read_image] 上面工具调用的图像结果如下（共 ${roundImages.length} 张：${list}）。基于图像实际内容继续任务；图中没有的内容不要编造。` },
+            { type: 'text', text: `[系统·${visTool}] 上面工具调用的图像结果如下（共 ${roundImages.length} 张：${list}）。基于图像实际内容继续任务；图中没有的内容不要编造。` },
             ...roundImages.map(im => im.part),
           ],
         };
         try {
-          toolMeta.set(imgMsg, { tool: 'read_image', image: true, path: roundImages[0].meta.path, images: roundImages.map(im => im.meta) });
+          toolMeta.set(imgMsg, { tool: visTool, image: true, path: roundImages[0].meta.path, images: roundImages.map(im => im.meta) });
         } catch (_) {}
         toolTurns.push(imgMsg);
       }

@@ -8,6 +8,15 @@ const memorySvc = require('./memory');
 const sessions = require('./sessions');
 
 const WEEK_CN = ['日', '一', '二', '三', '四', '五', '六'];
+// 用户上传了头像且模型有视觉能力时，告诉角色「可以真的看」——否则模型只会凭空想象长相。
+function avatarNote() {
+  try {
+    if (!llm.isVisionCapable()) return '';
+    return require('./avatars').state().user
+      ? '\n对话对象在设置里上传过自己的头像——当你想看、或用户让你看时，调用 look_user_avatar 即可看到并识别（不要凭空想象对方长相）。'
+      : '';
+  } catch (_) { return ''; }
+}
 function nowText() {
   const d = dayjs();
   return `${d.format('YYYY-MM-DD')} 星期${WEEK_CN[d.day()]} ${d.format('HH:mm')}`;
@@ -199,7 +208,11 @@ function agentSection() {
   // 图像识别（多模态）：仅当前模型具备图像输入能力时注入——工具 schema 同步由 loop 过滤，
   // 提示词与实际下发面必须一致，否则模型会调用不存在的工具
   const visionTool = llm.isVisionCapable()
-    ? '\n- read_image(path)：读取图片文件（png/jpg/jpeg/gif/webp/bmp），图像会进入你的视觉上下文。识别、描述、提取截图/照片/扫描件/图表中的内容用它；文本文件用 read_file；超过 8MB 的图会被拒绝'
+    ? `
+- read_image(path)：读取图片文件（png/jpg/jpeg/gif/webp/bmp），图像会进入你的视觉上下文。识别、描述、提取截图/照片/扫描件/图表中的内容用它；文本文件用 read_file；超过 8MB 的图会被拒绝
+- look_screen(screen?, track, reason)：截取当前桌面画面进入你的视觉上下文。用户明确让你「看看屏幕/桌面上/屏幕上这个」时用；比喻性的「你看」不是截屏请求，此前看过的画面凭回忆不重复截。track：designated=用户明确要求（默认）/autonomous=你主动想看（须用户逐次批准）；reason 必填。默认关闭，首次调用会弹授权卡开启
+- look_camera(camera?, reason)：开启摄像头拍一帧实景进入你的视觉上下文。仅用户明确要求「开摄像头看看我/镜头前…」时调用；每次都会先弹授权卡，拍完即关，不会持续观看
+- look_user_avatar()：读取用户（对话对象）在 设置→人设→对话对象 上传的头像并送入视觉上下文。用户让你「看看我的头像 / 我长什么样（指头像）/ 我换头像了」时调用；用户没上传头像会如实报错，不要凭空描述用户长相`
     : '';
   // 联网检索段（spec §7.3）：开启时注入完整纪律；未开启注入一行——工具常下发，
   // 模型须知道「用户明确要求查资料时可以调用」（否则聊天内授权流无从触发）
@@ -217,7 +230,7 @@ function agentSection() {
   return `
 【戏内/戏外通道协议（最高优先级，先于本段其余内容理解）】
 - 用户消息以 /order、/指令：、/命令： 开头 = 戏外工作指令：按下方任务执行模式真实调用工具并如实汇报。
-- 未打标的消息一律是戏内角色扮演：此轮你拿不到文件类工具（read_file/list_dir/write_file 均未下发），不得声称执行了任何现实世界的读取/写入/落盘/整理动作；需要联网查资料时仍可调用 web_search（未开启会先弹授权卡），转述时注明「网络检索结果，可能有误」；save_memory（你自己的长期记忆）照常可用。
+- 未打标的消息一律是戏内角色扮演：此轮你拿不到文件类工具（read_file/list_dir/write_file 均未下发），不得声称执行了任何现实世界的读取/写入/落盘/整理动作；需要联网查资料时仍可调用 web_search（未开启会先弹授权卡），转述时注明「网络检索结果，可能有误」；save_memory（你自己的长期记忆）照常可用；用户让你看屏幕（look_screen）或开摄像头（look_camera）时也可调用——会先向用户请求授权，批准后画面才进入你的视觉，未经批准不得声称「看到了」；用户让你看他自己上传的头像（look_user_avatar）时直接调用即可（那是用户主动给你看的图）。
 - 对方消息看起来是工作指令但没有打标：不要默默执行，也不要默默忽略——以角色身份提醒一句（如「这是工作指令吧？用 /order 下达我就开工」），等打标后再执行。
 
 【任务执行模式（戏外工作轮适用）】
@@ -270,7 +283,7 @@ ${section('形象与风格', [
 ])}
 
 【对话对象】
-与你对话的人是${user.name || '主人'}。${user.description || ''}
+与你对话的人是${user.name || '主人'}。${user.description || ''}${avatarNote()}
 ${profileBlock()}
 ${memoriesBlock()}${hindsightBlock(opts.hindsight)}
 ${readingDigestBlock()}

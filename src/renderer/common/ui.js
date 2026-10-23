@@ -1,4 +1,8 @@
-// 通用 UI：toast / confirm / modal
+// 通用 UI：toast / confirm / modal / 骨架屏
+import { icon } from './icons.js';
+
+const TOAST_ICON = { ok: 'checkCircle', error: 'xCircle', warn: 'alert', info: 'info' };
+
 export function toast(msg, type = 'info', ms = 2600) {
   let host = document.getElementById('dp-toasts');
   if (!host) {
@@ -7,8 +11,8 @@ export function toast(msg, type = 'info', ms = 2600) {
     document.body.appendChild(host);
   }
   const el = document.createElement('div');
-  el.className = 'toast ' + (type === 'info' ? '' : type);
-  el.textContent = msg;
+  el.className = 'toast ' + (type === 'info' ? 'info' : type);
+  el.innerHTML = `${icon(TOAST_ICON[type] || 'info', 16)}<span>${esc(msg)}</span>`;
   host.appendChild(el);
   setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .2s'; setTimeout(() => el.remove(), 220); }, ms);
 }
@@ -20,19 +24,24 @@ export function confirmBox(msg, { title = '确认', okText = '确定', danger = 
     mask.className = 'dp-modal-mask';
     mask.innerHTML = `
       <div class="dp-modal" style="min-width:320px">
-        <div class="modal-head">${esc(title)}</div>
+        <div class="modal-head"><span>${esc(title)}</span></div>
         <div class="modal-body" style="padding-bottom:10px;line-height:1.6">${esc(msg)}</div>
         <div class="modal-foot">
           <button class="btn btn-sm" data-act="no">取消</button>
           <button class="btn btn-sm ${danger ? 'btn-danger' : 'btn-primary'}" data-act="yes">${esc(okText)}</button>
         </div>
       </div>`;
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); done(false); } };
+    const done = (v) => { mask.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
     mask.addEventListener('click', e => {
       const act = e.target && e.target.dataset && e.target.dataset.act;
-      if (act === 'yes') { mask.remove(); resolve(true); }
-      else if (act === 'no' || e.target === mask) { mask.remove(); resolve(false); }
+      if (act === 'yes') done(true);
+      else if (act === 'no' || e.target === mask) done(false);
     });
+    document.addEventListener('keydown', onKey);
     document.body.appendChild(mask);
+    const yes = mask.querySelector('[data-act=yes]');
+    if (yes) setTimeout(() => yes.focus(), 30);
   });
 }
 
@@ -43,12 +52,25 @@ export function openModal({ title = '', width } = {}) {
   const el = document.createElement('div');
   el.className = 'dp-modal';
   if (width) el.style.width = width;
-  el.innerHTML = `<div class="modal-head">${esc(title)}</div><div class="modal-body"></div>`;
+  el.innerHTML = `<div class="modal-head"><span>${esc(title)}</span>`
+    + `<button class="btn btn-icon sm modal-close" title="关闭（Esc）">${icon('close', 16)}</button></div>`
+    + `<div class="modal-body"></div>`;
   mask.appendChild(el);
   document.body.appendChild(mask);
-  const close = () => mask.remove();
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  const close = () => { mask.remove(); document.removeEventListener('keydown', onKey); };
   mask.addEventListener('mousedown', e => { if (e.target === mask) close(); });
+  el.querySelector('.modal-close').addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
   return { el, body: el.querySelector('.modal-body'), close };
+}
+
+// 骨架屏：替换「加载中…」文字，避免布局跳动
+export function skeletonBlock(lines = 3) {
+  const widths = ['', 'w80', 'w60'];
+  return '<div class="skeleton-wrap" aria-busy="true">' +
+    Array.from({ length: lines }, (_, i) => `<div class="skeleton line ${widths[i % widths.length]}"></div>`).join('') +
+    '</div>';
 }
 
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }

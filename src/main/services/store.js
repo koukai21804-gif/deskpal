@@ -23,6 +23,7 @@ const FILE_MAP = {
   'chats/roleplay': 'chats/roleplay.json',
   'chats/quick': 'chats/quick.json',
   'memory/roleplay': 'memory/roleplay.json',
+  avatar: 'config/avatar.json',
   'user/profile': 'user/profile.json',
   'user/profile-archive': 'user/profile-archive.json',
   'canon/seal': 'config/canon-seal.json',
@@ -48,7 +49,7 @@ const DEFAULTS = {
     video: { ytDlpPath: '', ffmpegPath: '' },
     activity: { paused: false, idleThresholdSec: 180, windowPollMs: 1000, idlePollMs: 5000 },
     schedule: { leadEvent: 60, leadStart: 5, leadDeadline: 120, snoozeMin: 10, sound: true, systemNotification: true, catchupHours: 24 },
-    agent: { enabled: true, maxRounds: 8, permissionTimeoutSec: 120, permissionMode: 'read', toolMaxTokens: 8192, toolCtxTokenBudget: 40000, webSearch: { enabled: false, autonomousDailyLimit: 100, cooldownMin: 10, blockedTopics: [] } },
+    agent: { enabled: true, maxRounds: 8, permissionTimeoutSec: 120, permissionMode: 'read', toolMaxTokens: 8192, toolCtxTokenBudget: 40000, webSearch: { enabled: false, autonomousDailyLimit: 100, cooldownMin: 10, blockedTopics: [] }, visionCapture: { screenEnabled: false } },
   },
   // Hindsight 语义记忆桥（v0.6）：apiUrl 指向过滤代理；autoPrompt=false 关闭启动询问
   hindsight: {
@@ -100,6 +101,8 @@ const DEFAULTS = {
       description: '读大学时认识的前辈，没有因为我广博而丰富的知识和病弱的身体而将自己当作异类，而是作为普通女生全然接纳，尊重自己的局限、欣赏自己的独特，并愿意等待我以自己的节奏成长，于是与前辈共同构建了一个只属于彼此的、兼具理性与温情的私密空间。我用逻辑帮前辈厘清混沌，前辈用情感帮我理解人性。',
     },
   },
+  // 用户头像（设置→人设→对话对象上传；聊天窗消息头像 + look_user_avatar 视觉读取）
+  avatar: { user: null },
   // canon 封存（canon.js 独立守护）：版本号 / 各锁组哈希 / 批准时点 canon 快照（篡改恢复源）/
   // provenance 历史 / HMAC 防协同篡改 / 签署状态机（risk note R1/R2）。version=0 表示未封存。
   'canon/seal': { version: 0, doc: 'TITOR-CANON v1.0', sealedAt: null, hashes: {}, snapshot: null, history: [], status: 'draft', approvedBy: null, approvedAt: null, hmac: null },

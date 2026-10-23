@@ -1,9 +1,10 @@
 // 聊天窗：角色扮演 / 快问两标签、流式渲染、停止/重生成、日程确认条、启动器本地匹配
-// ★v0.3：节拍按句触发宠物表情、agent 步骤时间线、写权限卡、diff 卡、中断任务提示条
+// v0.3：节拍按句触发宠物表情、agent 步骤时间线、写权限卡、diff 卡、中断任务提示条
 import { dp, initTheme, esc, errText, uid } from '../common/ipc.js';
 import { renderMD } from '../common/md.js';
-import { toast, confirmBox, openModal } from '../common/ui.js';
-import { mountTitlebar } from '../common/windows/titlebar.js';
+import { toast, confirmBox, openModal, skeletonBlock } from '../common/ui.js';
+import { icon } from '../common/icons.js';
+import { renderPet } from '../pet/sprite.js';
 
 const EMO_LABEL = { normal: '平常', happy: '开心', surprised: '惊讶', angry: '愤怒', thinking: '思考', sad: '悲伤' };
 const SCHEDULE_RE = /^(提醒我|帮我记一下|记一下|添加日程|加个日程)/;
@@ -20,34 +21,42 @@ let tab = 'roleplay';
 let streaming = null;           // { tab, el, raw, steps, changes, permTimers, sessionId }
 let histories = { roleplay: [], quick: [] };
 let sessionInfo = { activeSessionId: '', sessions: [] }; // v0.5 多会话（仅 roleplay）
+let spriteSlots = {};           // 表情差分图槽位（空态角色用；boot 时取一次）
+let avatarState = { user: null }; // 对话对象头像（设置→人设→对话对象上传）
 
 const app = document.getElementById('app');
-app.appendChild(mountTitlebar('deskpal · 聊天'));
 
-const tabsEl = document.createElement('div');
-tabsEl.className = 'tabs';
-tabsEl.innerHTML = `
-  <div class="tab active" data-tab="roleplay">💬 角色扮演</div>
-  <div class="tab" data-tab="quick">⚡ 快问</div>
-  <div class="grow"></div>
-  <div class="tab" data-act="export" title="导出当前会话为 Markdown">📤 导出</div>
-  <div class="tab" data-act="clear" title="清空当前会话">🧹 清空</div>`;
-app.appendChild(tabsEl);
+// ---------- 合并顶栏：分段标签 + 会话胶囊 + 动作区 + 窗口按钮（高度 44px） ----------
+const topbar = document.createElement('div');
+topbar.className = 'chat-topbar';
+topbar.innerHTML = `
+  <div class="seg" role="tablist" aria-label="聊天模式">
+    <div class="seg-item" data-tab="roleplay" role="tab" tabindex="0" aria-selected="true">${icon('message', 15)}<span>角色扮演</span></div>
+    <div class="seg-item" data-tab="quick" role="tab" tabindex="0" aria-selected="false">${icon('bolt', 15)}<span>快问</span></div>
+  </div>
+  <button class="tb-session" id="sessionBtn" title="切换会话（切换前会自动固化未提取的记忆）">
+    <span class="ss-kind" id="sessionKind">主</span>
+    <span class="ss-name" id="sessionName">主对话</span>
+    <span class="ss-count" id="sessionCount"></span>
+    ${icon('chevronD', 14)}
+  </button>
+  <span class="tb-spacer"></span>
+  <div class="tb-actions">
+    <button class="win-btn" id="norekiMailBtn" title="NOREKI-Mail 信箱：克莉奥（clio@hermes）的来信。点按查看——信文将进入对话，缇托即可读信回应">${icon('mail', 16)}<span id="norekiMailBadge" class="mail-badge" style="display:none">0</span></button>
+    <button class="win-btn" id="exportBtn" title="导出当前会话为 Markdown">${icon('upload', 16)}</button>
+    <button class="win-btn" id="clearBtn" title="清空当前会话">${icon('sweep', 16)}</button>
+    <span class="tb-sep"></span>
+    <button class="win-btn" id="minBtn" title="最小化">${icon('minimize', 16)}</button>
+    <button class="win-btn close" id="closeBtn" title="关闭">${icon('close', 16)}</button>
+  </div>`;
+app.appendChild(topbar);
 
-// 会话栏（v0.5）：主对话=日常角色扮演常驻；＋ 可开任意数量的专项会话（特定任务/场景扮演）。
-// 切换时主进程先把旧会话的未提取记忆固化入库，再落新 active——跨会话不丢长期信息。
-// v1.5：新增「📬 信件」按钮——NOREKI-Mail 信箱（克莉奥来信），徽标显示未读数，点按查看。
-const sessionBar = document.createElement('div');
-sessionBar.className = 'session-bar';
-sessionBar.innerHTML = `
-  <span class="session-label">会话</span>
-  <select id="sessionSel" class="session-select" title="切换会话（切换前会自动固化未提取的记忆）"></select>
-  <button class="btn btn-sm" id="sessionNewBtn" title="新建专项会话（特定任务/场景，与主对话互不干扰）">＋ 专项会话</button>
-  <button class="btn btn-sm" id="sessionEditBtn" title="重命名 / 设置本会话主题">✏️</button>
-  <button class="btn btn-sm" id="sessionDelBtn" title="删除当前专项会话（主对话不可删）">🗑</button>
-  <span class="grow"></span>
-  <button class="btn btn-sm" id="norekiMailBtn" title="NOREKI-Mail 信箱：克莉奥（clio@hermes）的来信。点按查看——信文将进入对话，缇托即可读信回应">📬 信件<span id="norekiMailBadge" class="mail-badge" style="display:none">0</span></button>`;
-app.appendChild(sessionBar);
+const segEl = topbar.querySelector('.seg');
+const sessionBtn = topbar.querySelector('#sessionBtn');
+topbar.querySelector('#minBtn').addEventListener('click', () => dp.minimizeWindow());
+topbar.querySelector('#closeBtn').addEventListener('click', () => window.close());
+topbar.querySelector('#exportBtn').addEventListener('click', () => doExport());
+topbar.querySelector('#clearBtn').addEventListener('click', () => doClear());
 
 // 信箱：未读徽标刷新 + 查看动作（v1.5）
 async function refreshMailBadge() {
@@ -72,26 +81,27 @@ document.getElementById('norekiMailBtn').addEventListener('click', async () => {
   } catch (err) { toast(errText(err), 'error'); }
 });
 dp.on('noreki:mail', () => refreshMailBadge());
+// 设置页换了/清空头像 → 本窗消息头像即时更新
+dp.on('avatar:changed', (st) => { avatarState = st || { user: null }; renderAll(); });
 
 const main = document.createElement('div');
 main.className = 'chat-wrap';
 main.innerHTML = `
   <div class="interrupt-slot" id="interruptSlot"></div>
   <div class="msg-list" id="list"></div>
-  <div class="chat-input">
-    <textarea id="input" placeholder="和宠物聊天…（"打开xx"可直接启动程序；"提醒我明天9点开会"直达日程）" rows="1"></textarea>
-    <div class="input-row">
-      <select id="permMode" class="perm-select" title="宠物文件权限（对下一次任务生效）：
-🔒 只读：只能读取和列目录，不能写文件
-📝 可编辑：可写应用数据目录（deskpal 文件夹）及其子目录
-⚠️ 完全编辑：可读写本机大部分目录（核心系统目录除外），每次写入需在权限卡批准">
-        <option value="read">🔒 只读</option>
-        <option value="userData">📝 可编辑</option>
-        <option value="full">⚠️ 完全编辑</option>
-      </select>
-      <span class="model-tag" id="modelTag"></span>
-      <button class="btn btn-sm" id="stopBtn" style="display:none">⏹ 停止</button>
-      <button class="btn btn-sm btn-primary" id="sendBtn">发送</button>
+  <div class="composer">
+    <div class="composer-box">
+      <textarea id="input" placeholder="和宠物聊天…（「打开xx」可直接启动程序；「提醒我明天9点开会」直达日程）" rows="1"></textarea>
+      <div class="composer-bar">
+        <div class="perm-seg" id="permSeg" role="group" aria-label="宠物文件权限（对下一次任务生效）">
+          <button type="button" data-v="read" aria-pressed="true" title="只读：只能读取和列目录，不能写文件">${icon('lock', 12)}只读</button>
+          <button type="button" data-v="userData" aria-pressed="false" title="可编辑：可写应用数据目录（deskpal 文件夹）及其子目录">${icon('pencil', 12)}可编辑</button>
+          <button type="button" data-v="full" aria-pressed="false" title="完全编辑：可读写本机大部分目录（核心系统目录除外），每次写入需在权限卡批准">${icon('shield', 12)}完全</button>
+        </div>
+        <span class="model-tag" id="modelTag"></span>
+        <button class="btn btn-sm btn-icon" id="stopBtn" style="display:none" title="停止生成">${icon('stop', 16)}</button>
+        <button class="btn btn-sm btn-primary" id="sendBtn" title="发送（Enter）">${icon('send', 15)}发送</button>
+      </div>
     </div>
   </div>`;
 app.appendChild(main);
@@ -100,11 +110,17 @@ const list = main.querySelector('#list');
 const input = main.querySelector('#input');
 const sendBtn = main.querySelector('#sendBtn');
 const stopBtn = main.querySelector('#stopBtn');
-const permModeSel = main.querySelector('#permMode');
+const permSeg = main.querySelector('#permSeg');
 
-// ---------- 权限模式选择（三档：只读/可编辑/完全编辑，对下一次任务生效） ----------
-permModeSel.addEventListener('change', async () => {
-  const v = permModeSel.value;
+// ---------- 权限模式（三档：只读/可编辑/完全编辑，对下一次任务生效） ----------
+function setPermMode(v) {
+  permSeg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === v)));
+}
+permSeg.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-v]');
+  if (!btn) return;
+  const v = btn.dataset.v;
+  setPermMode(v);
   try {
     await dp.storeSet('settings', { agent: { permissionMode: v } });
     const label = { read: '只读', userData: '可编辑（数据目录内）', full: '完全编辑（大部分目录，逐次批准）' }[v];
@@ -113,29 +129,34 @@ permModeSel.addEventListener('change', async () => {
 });
 
 // ---------- 标签切换 ----------
-tabsEl.addEventListener('click', async (e) => {
-  const t = e.target.closest('.tab');
-  if (!t) return;
-  if (t.dataset.act === 'export') return doExport();
-  if (t.dataset.act === 'clear') return doClear();
-  tab = t.dataset.tab;
-  tabsEl.querySelectorAll('.tab[data-tab]').forEach(x => x.classList.toggle('active', x.dataset.tab === tab));
-  sessionBar.style.display = tab === 'roleplay' ? '' : 'none';
+function switchTabTo(next) {
+  tab = next;
+  segEl.querySelectorAll('.seg-item').forEach(x => x.setAttribute('aria-selected', String(x.dataset.tab === tab)));
+  sessionBtn.hidden = tab !== 'roleplay';
   input.placeholder = tab === 'quick'
     ? '快问快答：直接问，我简洁回答（可以问知识、代码、命令…）'
-    : '和宠物聊天…（"打开xx"可直接启动程序；"提醒我明天9点开会"直达日程）';
+    : '和宠物聊天…（「打开xx」可直接启动程序；「提醒我明天9点开会」直达日程）';
   renderAll();
+}
+segEl.addEventListener('click', (e) => {
+  const t = e.target.closest('.seg-item');
+  if (t) switchTabTo(t.dataset.tab);
+});
+segEl.addEventListener('keydown', (e) => {
+  const t = e.target.closest('.seg-item');
+  if (!t) return;
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchTabTo(t.dataset.tab); }
 });
 
-// ---------- 会话栏 ----------
+// ---------- 会话胶囊（主对话 + 专项会话，切换前主进程先固化未提取记忆） ----------
 function renderSessions() {
-  const sel = sessionBar.querySelector('#sessionSel');
-  sel.innerHTML = sessionInfo.sessions.map(s => {
-    const tag = s.kind === 'main' ? '主' : '专';
-    return `<option value="${esc(s.id)}" ${s.id === sessionInfo.activeSessionId ? 'selected' : ''}>${tag}｜${esc(s.name)}（${s.msgCount} 条）</option>`;
-  }).join('');
   const cur = sessionInfo.sessions.find(s => s.id === sessionInfo.activeSessionId);
-  sessionBar.querySelector('#sessionDelBtn').style.display = cur && cur.kind === 'main' ? 'none' : '';
+  if (cur) {
+    topbar.querySelector('#sessionKind').textContent = cur.kind === 'main' ? '主' : '专';
+    topbar.querySelector('#sessionName').textContent = cur.name;
+    topbar.querySelector('#sessionCount').textContent = cur.msgCount ? `${cur.msgCount} 条` : '';
+  }
+  if (sessionMenuEl) openSessionMenu(true); // 菜单开着时同步刷新
 }
 
 async function refreshSessions() {
@@ -148,42 +169,92 @@ async function reloadRoleplay() {
   renderAll();
 }
 
-sessionBar.querySelector('#sessionSel').addEventListener('change', async (e) => {
+let sessionMenuEl = null;
+function closeSessionMenu() {
+  if (!sessionMenuEl) return;
+  sessionMenuEl.remove();
+  sessionMenuEl = null;
+  document.removeEventListener('mousedown', onDocDown, true);
+}
+function onDocDown(e) {
+  if (sessionMenuEl && !sessionMenuEl.contains(e.target) && !sessionBtn.contains(e.target)) closeSessionMenu();
+}
+
+async function switchSession(id) {
+  if (!id || id === sessionInfo.activeSessionId) { closeSessionMenu(); return; }
   if (streaming && streaming.tab === 'roleplay') {
     toast('正在生成中，等这轮结束再切换会话', 'warn');
-    renderSessions(); // 还原下拉
     return;
   }
   try {
-    await dp.chatSessionSwitch(e.target.value);
+    await dp.chatSessionSwitch(id);
     await reloadRoleplay();
     const cur = sessionInfo.sessions.find(s => s.id === sessionInfo.activeSessionId);
     toast(`已切换到「${cur ? cur.name : ''}」（切换前已固化未提取的记忆）`, 'ok');
   } catch (err) { toast(errText(err), 'error'); renderSessions(); }
-});
+}
 
-sessionBar.querySelector('#sessionNewBtn').addEventListener('click', () => {
-  if (streaming && streaming.tab === 'roleplay') return toast('正在生成中，稍后再新建', 'warn');
-  openSessionModal('new');
-});
-sessionBar.querySelector('#sessionEditBtn').addEventListener('click', () => {
-  const cur = sessionInfo.sessions.find(s => s.id === sessionInfo.activeSessionId);
-  if (cur) openSessionModal('edit', cur);
-});
-sessionBar.querySelector('#sessionDelBtn').addEventListener('click', async () => {
-  const cur = sessionInfo.sessions.find(s => s.id === sessionInfo.activeSessionId);
-  if (!cur || cur.kind === 'main') return;
-  if (!(await confirmBox(`删除专项会话「${cur.name}」？其中未提取记忆的对话内容将一并丢弃（已入长期记忆的不受影响）。`, { danger: true, okText: '删除' }))) return;
-  try {
-    await dp.chatSessionDelete(cur.id);
-    await reloadRoleplay();
-    toast('已删除（活跃会话回到主对话）', 'ok');
-  } catch (err) { toast(errText(err), 'error'); }
-});
+function openSessionMenu(toggleOnly = false) {
+  if (sessionMenuEl) { closeSessionMenu(); if (toggleOnly) return; return; }
+  if (toggleOnly) return;
+  const menu = document.createElement('div');
+  menu.className = 'tb-menu';
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = (sessionInfo.sessions.length ? sessionInfo.sessions.map(s => `
+      <div class="sm-item ${s.id === sessionInfo.activeSessionId ? 'active' : ''}" data-id="${esc(s.id)}" role="menuitem" tabindex="0">
+        <span class="ss-kind">${s.kind === 'main' ? '主' : '专'}</span>
+        <span class="ss-name">${esc(s.name)}</span>
+        <span class="ss-count">${s.msgCount} 条</span>
+        ${s.id === sessionInfo.activeSessionId ? icon('check', 14) : ''}
+      </div>`).join('') : '<div class="sm-empty">暂无会话</div>')
+    + `<div class="sm-foot">
+        <button class="btn btn-sm" data-act="new">${icon('plus', 14)}专项会话</button>
+        <button class="btn btn-sm" data-act="edit">${icon('pencil', 14)}重命名</button>
+        <span class="grow"></span>
+        <button class="btn btn-sm btn-icon" data-act="del" title="删除当前专项会话（主对话不可删）">${icon('trash', 16)}</button>
+      </div>`;
+  document.body.appendChild(menu);
+  const r = sessionBtn.getBoundingClientRect();
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
+  menu.style.top = Math.max(8, Math.min(r.bottom + 6, window.innerHeight - h - 8)) + 'px';
+  sessionMenuEl = menu;
+  document.addEventListener('mousedown', onDocDown, true);
+  menu.addEventListener('click', async (e) => {
+    const item = e.target.closest('.sm-item');
+    if (item) { closeSessionMenu(); switchSession(item.dataset.id); return; }
+    const act = e.target.closest('[data-act]');
+    if (!act) return;
+    const a = act.dataset.act;
+    closeSessionMenu();
+    if (a === 'new') {
+      if (streaming && streaming.tab === 'roleplay') return toast('正在生成中，稍后再新建', 'warn');
+      openSessionModal('new');
+    } else if (a === 'edit') {
+      const cur = sessionInfo.sessions.find(s => s.id === sessionInfo.activeSessionId);
+      if (cur) openSessionModal('edit', cur);
+    } else if (a === 'del') {
+      const cur = sessionInfo.sessions.find(s => s.id === sessionInfo.activeSessionId);
+      if (!cur || cur.kind === 'main') return toast('主对话不可删除', 'warn');
+      if (!(await confirmBox(`删除专项会话「${cur.name}」？其中未提取记忆的对话内容将一并丢弃（已入长期记忆的不受影响）。`, { danger: true, okText: '删除' }))) return;
+      try {
+        await dp.chatSessionDelete(cur.id);
+        await reloadRoleplay();
+        toast('已删除（活跃会话回到主对话）', 'ok');
+      } catch (err) { toast(errText(err), 'error'); }
+    }
+  });
+  menu.addEventListener('keydown', (e) => {
+    const item = e.target.closest('.sm-item');
+    if (item && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); closeSessionMenu(); switchSession(item.dataset.id); }
+    if (e.key === 'Escape') closeSessionMenu();
+  });
+}
+sessionBtn.addEventListener('click', () => openSessionMenu());
 
 // 新建/编辑会话弹窗：名称 + 一句话主题（主题会注入角色上下文的【当前会话】卡）
 function openSessionModal(mode, cur = null) {
-  const { body, close } = openModal({ title: mode === 'new' ? '＋ 新建专项会话' : '✏️ 会话设置', width: '460px' });
+  const { body, close } = openModal({ title: mode === 'new' ? '新建专项会话' : '会话设置', width: '460px' });
   body.innerHTML = `
     <p class="hint" style="margin:2px 0 10px">专项会话与主对话互不共享聊天记录——适合具体任务（如「整理游戏卡牌数据」）或专项场景扮演。长期记忆与身份档案仍然共用；跨会话想用的信息让宠物「记住」即可。</p>
     <div class="field"><span class="label">会话名称</span>
@@ -213,50 +284,81 @@ function openSessionModal(mode, cur = null) {
   });
 }
 
+// ---------- 头像 ----------
+// 助手头像 = 仓库根 icon.png（随包分发的角色画）；用户头像 = 设置里上传到数据目录的图片。
+const ASSISTANT_AVATAR = '../../icon.png';
+function fileUrl(p) { return 'file:///' + String(p).replace(/\\/g, '/'); }
+function userAvatarHtml() {
+  const u = avatarState && avatarState.user;
+  return u && u.path
+    ? `<img class="avatar-img" src="${esc(fileUrl(u.path))}" alt="我的头像" draggable="false">`
+    : icon('user', 16);
+}
+function assistantAvatarHtml() {
+  return `<img class="avatar-img" src="${ASSISTANT_AVATAR}" alt="缇托" draggable="false">`;
+}
+
 // ---------- 消息渲染 ----------
-function msgEl(m) {
+function fmtClock(at) {
+  if (!at) return '';
+  const d = new Date(at);
+  if (isNaN(d)) return '';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function msgEl(m, group = 'solo') {
   const el = document.createElement('div');
   const kind = m.role === 'user' ? 'user' : m.role === 'system' ? 'system-notice' : m.error ? 'error' : 'assistant';
   // 戏外工作轮（/order 打标）消息 highlight（用户决策 2026-09-29）：真话边界整轮标亮
   el.className = 'msg ' + kind + (m.work ? ' work' : '') + (m.mailInject ? ' noreki-mail' : '');
   el.dataset.id = m.id;
+  el.dataset.group = group;
   // 信纸卡（v1.5）：NOREKI-Mail 注入消息——头像换成信封，气泡加信头
   if (m.mailInject) {
     const mi = m.mailInject;
     el.innerHTML = `
-      <div class="avatar">📩</div>
-      <div class="bubble mail-card">
+      <div class="avatar">${icon('mail', 16)}</div>
+      <div class="msg-main"><div class="bubble mail-card">
         <div class="mail-head">来信 · ${esc(mi.from)} <span class="mail-meta">｜${esc(mi.kind)}｜${esc(mi.sentAt)}</span></div>
         <div class="md body">${renderMD(m.content || '')}</div>
-      </div>`;
+      </div></div>`;
     return el;
   }
-  const avatar = m.role === 'user' ? '🧑' : m.role === 'system' ? '' : '🟢';
-  const bodyHTML = m.error
+  const isAssistant = m.role === 'assistant';
+  const bodyHTML = m.error || m.role === 'system'
     ? esc(m.content)
-    : m.role === 'system'
-      ? esc(m.content)
-      : renderMD(m.content || '');
-  const emoHtml = m.emotion ? `<span class="emo-dot ${m.emotion}" title="${EMO_LABEL[m.emotion] || ''}"></span>` : '';
+    : renderMD(m.content || '');
   // 本轮 API 消耗（模型用量回执汇总；供应商未报用量时不显示）
-  const usageText = m.role === 'assistant' ? usageMeterText(m.usage) : '';
-  const usageHtml = usageText ? `<div class="token-meter" title="本轮 API 消耗（上游用量回执汇总，仅供参考）">⚡ ${esc(usageText)}</div>` : '';
+  const usageText = isAssistant ? usageMeterText(m.usage) : '';
+  const usageHtml = usageText
+    ? `<span class="token-meter" title="本轮 API 消耗（上游用量回执汇总，仅供参考）">${esc(usageText)}</span>` : '';
   const opsHtml = m.role !== 'system'
     ? `<div class="ops">
-        <button data-op="copy">复制</button>
-        <button data-op="del">删除</button>
-        ${m.role === 'assistant' ? '<button data-op="regen">重新生成</button>' : ''}
+        <button data-op="copy" title="复制">${icon('copy', 15)}</button>
+        <button data-op="del" title="删除">${icon('trash', 15)}</button>
+        ${isAssistant ? `<button data-op="regen" title="重新生成">${icon('refresh', 15)}</button>` : ''}
       </div>` : '';
+  const timeTxt = fmtClock(m.at);
+  const footBits = [];
+  if (timeTxt) footBits.push(`<span class="mf-time">${timeTxt}</span>`);
+  if (m.emotion) {
+    footBits.push(`<span class="emo-dot ${m.emotion}" title="${EMO_LABEL[m.emotion] || ''}"></span>`);
+    footBits.push(`<span class="emo-label">${EMO_LABEL[m.emotion] || ''}</span>`);
+  }
+  if (usageHtml) footBits.push(usageHtml);
+  const footHtml = footBits.length
+    ? `<div class="msg-foot">${footBits.join('<span class="mf-sep">·</span>')}</div>` : '';
   el.innerHTML = `
-    ${avatar ? `<div class="avatar">${avatar}</div>` : ''}
-    <div class="bubble">
-      ${opsHtml}
-      ${m.work ? '<div class="work-tag">戏外 · 工作轮</div>' : ''}
-      <div class="md body">${bodyHTML}</div>
-      ${usageHtml}
-      ${emoHtml ? `<div class="meta">${emoHtml}<span class="small muted">${EMO_LABEL[m.emotion] || ''}</span></div>` : ''}
-      <div class="agent-area"></div>
-      <div class="sch-slot"></div>
+    ${m.role === 'system' ? '' : `<div class="avatar">${m.role === 'user' ? userAvatarHtml() : assistantAvatarHtml()}</div>`}
+    <div class="msg-main">
+      <div class="bubble">
+        ${opsHtml}
+        ${m.work ? '<div class="work-tag">戏外 · 工作轮</div>' : ''}
+        <div class="md body">${bodyHTML}</div>
+        <div class="agent-area"></div>
+        <div class="sch-slot"></div>
+      </div>
+      ${footHtml}
     </div>`;
   // 消息操作
   el.querySelectorAll('.ops button').forEach(btn => btn.addEventListener('click', () => msgOp(btn.dataset.op, m)));
@@ -303,7 +405,7 @@ function mountScheduleConfirm(slot, m) {
   box.className = 'sch-confirm';
   const t = s.start ? new Date(s.start.replace(/-/g, '/')) : null;
   const tText = t ? `${t.getMonth() + 1}月${t.getDate()}日 ${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}` : '';
-  box.innerHTML = `📅 检测到日程：${esc(s.title)} · ${tText}
+  box.innerHTML = `${icon('calendar', 14)} 检测到日程：${esc(s.title)} · ${tText}
     <button class="btn btn-sm btn-primary" data-a="add">加入日程</button>
     <button class="btn btn-sm" data-a="skip">忽略</button>`;
   box.addEventListener('click', async (e) => {
@@ -319,7 +421,7 @@ function mountScheduleConfirm(slot, m) {
         });
         m.scheduleDismissed = true;
         box.classList.add('added');
-        box.innerHTML = '✓ 已加入日程，到时间我会提醒你哦～';
+        box.innerHTML = `${icon('checkCircle', 14)} 已加入日程，到时间我会提醒你哦～`;
         toast('已加入日程', 'ok');
       } catch (err) { toast(errText(err), 'error'); }
     } else {
@@ -331,14 +433,14 @@ function mountScheduleConfirm(slot, m) {
 }
 
 // ---------- Agent 组件：步骤时间线 / 权限卡 / diff 卡 ----------
-const PHASE_ICON = { 设计: '📐', 发现: '🔍', 能力: '🛠', 验证: '✅' };
+const PHASE_ICON = { 设计: 'pencil', 发现: 'search', 能力: 'sliders', 验证: 'checkCircle' };
 
 // 步骤时间线（progress + tool + permission + notice 共用；llm 轮只在台账、不上时间线）
-// notice 徽章按类型分化：重试类 🔄 / 搜索开启 🌐 / 搜索日限 📵
+// notice 徽章按类型分化：重试 / 搜索开启 / 搜索日限
 function noticeBadge(n) {
-  if (n === 'search_enabled') return { icon: '🌐', label: '搜索' };
-  if (n === 'search_limit') return { icon: '📵', label: '日限' };
-  return { icon: '🔄', label: '重试' };
+  if (n === 'search_enabled') return { icon: 'search', label: '搜索' };
+  if (n === 'search_limit') return { icon: 'xCircle', label: '日限' };
+  return { icon: 'refresh', label: '重试' };
 }
 function renderTimeline(container, steps) {
   let box = container.querySelector('.agent-steps');
@@ -350,12 +452,12 @@ function renderTimeline(container, steps) {
   }
   const visible = steps.filter(s => s.kind !== 'llm');
   if (!visible.length) { box.remove(); return; }
-  box.innerHTML = `<summary>⚙️ 执行过程（${visible.length} 步）</summary>
+  box.innerHTML = `<summary>${icon('sliders', 14)} 执行过程（${visible.length} 步）</summary>
     <div class="steps-body">${visible.map(s => {
-      if (s.kind === 'progress') return `<div class="step"><span class="badge p">${PHASE_ICON[s.phase] || '•'} ${esc(s.phase || '')}</span><span>${esc(s.text || '')}</span></div>`;
-      if (s.kind === 'tool') return `<div class="step"><span class="badge t">🔧 ${esc(s.tool || '')}</span><span class="${s.ok === false ? 'step-fail' : ''}">${esc(s.summary || '')}${s.ok === false ? ' ✗' : ' ✓'}</span></div>`;
-      if (s.kind === 'permission') return `<div class="step"><span class="badge s">🛡 权限</span><span>${decisionText(s.decision)}</span></div>`;
-      if (s.kind === 'notice') { const nb = noticeBadge(s.notice); return `<div class="step"><span class="badge n">${nb.icon} ${nb.label}</span><span>${esc(s.text || '')}</span></div>`; }
+      if (s.kind === 'progress') return `<div class="step"><span class="badge p">${icon(PHASE_ICON[s.phase] || 'dot', 11)} ${esc(s.phase || '')}</span><span>${esc(s.text || '')}</span></div>`;
+      if (s.kind === 'tool') return `<div class="step"><span class="badge t">${icon('terminal', 11)} ${esc(s.tool || '')}</span><span class="${s.ok === false ? 'step-fail' : ''}">${esc(s.summary || '')}${s.ok === false ? ` ${icon('close', 11)}` : ` ${icon('check', 11)}`}</span></div>`;
+      if (s.kind === 'permission') return `<div class="step"><span class="badge s">${icon('shield', 11)} 权限</span><span>${decisionText(s.decision)}</span></div>`;
+      if (s.kind === 'notice') { const nb = noticeBadge(s.notice); return `<div class="step"><span class="badge n">${icon(nb.icon, 11)} ${nb.label}</span><span>${esc(s.text || '')}</span></div>`; }
       return '';
     }).join('')}</div>`;
 }
@@ -372,7 +474,7 @@ function mountPermissionCard(container, req) {
   box.className = 'perm-card';
   box.dataset.rid = req.id;
   box.innerHTML = `
-    <div class="perm-head">🛡 写入批准请求 <span class="perm-action">${esc(req.action)}</span></div>
+    <div class="perm-head">${icon('shield', 14)} 写入批准请求 <span class="perm-action">${esc(req.action)}</span></div>
     <div class="perm-path">${esc((req.scopePaths || []).join('\n'))}</div>
     <div class="perm-meta">${esc(req.detail || '')}</div>
     ${req.reason ? `<div class="perm-reason">理由：${esc(req.reason)}</div>` : ''}
@@ -423,9 +525,9 @@ function renderDiffCard(container, changed) {
   const hasAmbiguous = changed.some(c => c.origin === 'ambiguous');
   const KIND_CN = { create: '新建', overwrite: '覆盖', modify: '修改' };
   box.innerHTML = `
-    <summary>🗂 文件变更（${changed.length}）</summary>
+    <summary>${icon('folder', 14)} 文件变更（${changed.length}）</summary>
     <div class="diff-note">以下变更由 deskpal 前后快照实测得出，非模型自述</div>
-    ${hasAmbiguous ? '<div class="diff-warn">⚠ 检测到工具声明之外的变更，请人工确认</div>' : ''}
+    ${hasAmbiguous ? `<div class="diff-warn">${icon('alert', 12)} 检测到工具声明之外的变更，请人工确认</div>` : ''}
     ${changed.map(c => `
       <div class="diff-file">
         <div class="diff-file-head">
@@ -451,21 +553,21 @@ async function loadInterrupted() {
     const slot = main.querySelector('#interruptSlot');
     const box = document.createElement('div');
     box.className = 'interrupt-bar';
-    box.innerHTML = `<span>⚠ 上次有个任务被中断</span><button class="btn btn-sm" data-a="view">查看</button>`;
+    box.innerHTML = `<span>${icon('alert', 14)} 上次有个任务被中断</span><button class="btn btn-sm" data-a="view">查看</button>`;
     box.addEventListener('click', (e) => {
       if (!(e.target.dataset && e.target.dataset.a === 'view')) return;
       if (box.dataset.expanded) { box.remove(); return; }
       box.dataset.expanded = '1';
       const d = new Date(last.at || '');
       const stepLines = (last.steps || []).map(s => {
-        if (s.kind === 'progress') return `${PHASE_ICON[s.phase] || '•'} [${s.phase}] ${s.text}`;
-        if (s.kind === 'tool') return `🔧 ${s.tool} ${s.summary || ''} ${s.ok === false ? '✗' : '✓'}`;
-        if (s.kind === 'permission') return `🛡 权限：${decisionText(s.decision)}`;
+        if (s.kind === 'progress') return `[${s.phase}] ${s.text}`;
+        if (s.kind === 'tool') return `· ${s.tool} ${s.summary || ''} ${s.ok === false ? '（失败）' : '（成功）'}`;
+        if (s.kind === 'permission') return `权限：${decisionText(s.decision)}`;
         if (s.kind === 'llm') return `· 第 ${s.round} 轮（${s.finishReason}）`;
         return '';
       }).filter(Boolean).join('\n') || '（无步骤记录）';
       box.innerHTML = `
-        <div class="ib-title">⚠ 上次有个任务被中断（${esc(isNaN(d) ? String(last.at || '') : d.toLocaleString())}）</div>
+        <div class="ib-title">${icon('alert', 14)} 上次有个任务被中断（${esc(isNaN(d) ? String(last.at || '') : d.toLocaleString())}）</div>
         <div class="ib-cmd">指令：${esc(last.instruction || '')}</div>
         <pre class="ib-steps">${esc(stepLines)}</pre>
         ${last.changed && last.changed.length ? `<div class="ib-changes">已发生的写入：${last.changed.map(c => esc(c.path)).join('、')}</div>` : ''}
@@ -486,16 +588,32 @@ async function loadInterrupted() {
   } catch (_) { /* 台账不可用（旧版本无 agent:runs） */ }
 }
 
+const GROUP_GAP_MS = 5 * 60 * 1000;
+function groupOf(hist, i) {
+  const m = hist[i], p = hist[i - 1], n = hist[i + 1];
+  const same = (a, b) => a && b && a.role === b.role && !a.error && !b.error
+    && a.role !== 'system' && !a.mailInject && !b.mailInject
+    && Math.abs(new Date(b.at || 0) - new Date(a.at || 0)) < GROUP_GAP_MS;
+  const up = same(p, m), down = same(m, n);
+  return up && down ? 'mid' : up ? 'end' : down ? 'start' : 'solo';
+}
+
 function renderAll() {
   list.innerHTML = '';
   const hist = histories[tab];
   if (!hist.length) {
     const sess = sessionInfo.sessions.find(s => s.id === sessionInfo.activeSessionId);
     const sessName = tab === 'roleplay' && sess ? `「${sess.name}」` : '';
-    list.innerHTML = `<div class="empty">${tab === 'roleplay' ? `这是${sessName}的开头——和你的宠物聊聊吧，重要的事它会记住` : '问点什么，我直接回答'}</div>`;
+    list.innerHTML = `<div class="empty">
+      <div class="empty-ic" id="emptyPet"></div>
+      <div class="empty-title">${tab === 'roleplay' ? `这是${sessName}的开头` : '问点什么，我直接回答'}</div>
+      <div class="empty-desc">${tab === 'roleplay' ? '和你的宠物聊聊吧——重要的事它会记住。' : '快问快答，不写入长期记忆。'}</div>
+    </div>`;
+    const pet = list.querySelector('#emptyPet');
+    if (pet) renderPet(pet, 'happy', spriteSlots.happy || { mode: 'svg' });
     return;
   }
-  for (const m of hist) list.appendChild(msgEl(m));
+  hist.forEach((m, i) => list.appendChild(msgEl(m, groupOf(hist, i))));
   scrollBottom();
 }
 
@@ -563,8 +681,10 @@ async function send(text) {
   autoGrow();
 
   const el = document.createElement('div');
-  el.className = 'msg assistant';
-  el.innerHTML = `<div class="avatar">🟢</div><div class="bubble"><div class="md body"><span class="streaming-cursor"></span></div><div class="agent-area"></div><div class="sch-slot"></div></div>`;
+  el.className = 'msg assistant streaming enter';
+  el.dataset.group = 'solo';
+  el.innerHTML = `<div class="avatar">${assistantAvatarHtml()}</div>
+    <div class="msg-main"><div class="bubble"><div class="md body"><span class="thinking-dots"><i></i><i></i><i></i></span></div><div class="agent-area"></div><div class="sch-slot"></div></div></div>`;
   list.appendChild(el);
   scrollBottom();
 
@@ -724,7 +844,7 @@ sendBtn.addEventListener('click', () => send(input.value));
 const MEM_TYPE_LABEL = { relationship: '关系', event: '事件', fact: '事实', preference: '偏好' };
 const MEM_SCOPE_LABEL = { core: 'core·身份级', working: 'working·滚动', ephemeral: 'ephemeral·限时' };
 async function openMemoryManager() {
-  const { body } = openModal({ title: '🧠 长期记忆 · 角色无感知', width: '680px' });
+  const { body } = openModal({ title: '长期记忆 · 角色无感知', width: '680px' });
 
   async function refresh() {
     let items = [], coreUsage = { used: 0, budget: 1000 }, archive = [];
@@ -735,7 +855,7 @@ async function openMemoryManager() {
       <p class="hint" style="margin:4px 0 10px">宠物的长期记忆，分三层：<b>core</b>（身份级认知，全量每轮注入，共 ${coreUsage.used}/${coreUsage.budget} 字，不自动淘汰）、<b>working</b>（滚动记忆，最近 8 条注入）、<b>ephemeral</b>（限时事件，默认 14 天过期进归档，不注入）。本面板的查看/添加/删除/改层/恢复归档不进聊天记录，角色不会察觉。打开本面板时会自动补提取未入库的近期对话。</p>
       <div class="mem-add">
         <select id="memType">${Object.entries(MEM_TYPE_LABEL).map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
-        <select id="memImp">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${n === 3 ? 'selected' : ''}>${'★'.repeat(n)}</option>`).join('')}</select>
+        <select id="memImp" title="重要性">${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${n === 3 ? 'selected' : ''}>${n} 级${n === 5 ? '（最高）' : n === 1 ? '（最低）' : ''}</option>`).join('')}</select>
         <select id="memScope">${Object.entries(MEM_SCOPE_LABEL).map(([v, l]) => `<option value="${v}" ${v === 'working' ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <input id="memContent" type="text" maxlength="60" placeholder="新增记忆内容（≤60字）…">
         <button class="btn btn-sm btn-primary" id="memAddBtn">添加</button>
@@ -746,9 +866,9 @@ async function openMemoryManager() {
             <div class="mem-main">
               <span class="mem-type t-${esc(it.type)}">${MEM_TYPE_LABEL[it.type] || esc(it.type)}</span>
               <select class="mem-scope-sel" data-id="${esc(it.id)}" title="记忆层级">${Object.entries(MEM_SCOPE_LABEL).map(([v, l]) => `<option value="${v}" ${it.scope === v ? 'selected' : ''}>${l.split('·')[0]}</option>`).join('')}</select>
-              <span class="mem-imp" title="重要性 ${it.importance}/5">${'★'.repeat(Math.max(1, Math.min(5, it.importance || 1)))}</span>
+              <span class="mem-imp" title="重要性 ${it.importance}/5">${Math.max(1, Math.min(5, it.importance || 1))}/5</span>
               <span class="mem-content" title="${esc(it.content)}">${esc(it.content)}</span>
-              ${it.note ? `<span class="hint" title="${esc(it.note)}">⚠</span>` : ''}
+              ${it.note ? `<span class="hint" title="${esc(it.note)}">${icon('alert', 12)}</span>` : ''}
             </div>
             <div class="mem-side">
               <span class="small muted">${esc(String(it.createdAt || '').slice(0, 10))}</span>
@@ -758,7 +878,7 @@ async function openMemoryManager() {
         : '<p class="hint" style="text-align:center;padding:18px 0">暂无长期记忆——聊到重要信息（每 6 条用户消息 / 会话冷却后 / 打开本面板时）会自动提取；角色也会在你说「记住…」时主动写入。也可在上方手动添加。</p>'}
       </div>
       <details class="mem-archive" ${archive.length ? '' : 'hidden'}>
-        <summary>🗄 淘汰归档（${archive.length}）——过期/库满时移出的记忆，可恢复</summary>
+        <summary>${icon('layers', 13)} 淘汰归档（${archive.length}）——过期/库满时移出的记忆，可恢复</summary>
         <p class="hint" style="margin:6px 0 8px">恢复 = 重新确认：条目回到记忆库并按最新计入注入顺位；若库已满（50 条），会如实顶掉另一条最旧记忆进归档（下方操作回执会注明）。已过期的限时事件恢复后自动转为 working 长期记忆。</p>
         <div class="mem-arc-list">
           ${archive.map(e => `
@@ -815,9 +935,9 @@ async function openMemoryManager() {
 const LAYER_CN = { P1: 'P1 性格与相处', P2: 'P2 职业与经济（稳定层）', P2b: 'P2b 项目流水（高频滚动，满 20 自动归档最旧的）', P3: 'P3 关系档案' };
 let profileModalBody = null;
 async function openProfileManager() {
-  const { body } = openModal({ title: '🪪 用户身份档案 · 角色无感知', width: '680px' });
+  const { body } = openModal({ title: '用户身份档案 · 角色无感知', width: '680px' });
   profileModalBody = body;
-  body.innerHTML = '<p class="hint" style="padding:12px">加载中…（如有未漂移的新消息会先补跑一次提取）</p>';
+  body.innerHTML = `<div style="padding:12px">${skeletonBlock(3)}<p class="hint">如有未漂移的新消息，会先补跑一次提取</p></div>`;
   let doc;
   try { doc = await dp.profileGet(); } catch (err) { body.innerHTML = `<p class="hint">加载失败：${esc(errText(err))}</p>`; return; }
   renderProfile(doc);
@@ -827,7 +947,7 @@ async function openProfileManager() {
       <div class="row prof-kv" data-layer="${layer}" style="gap:6px;margin:4px 0">
         <input type="text" class="pf-key" value="${esc(k)}" maxlength="12" style="width:120px" placeholder="字段名">
         <input type="text" class="pf-val" value="${esc(v)}" maxlength="240" style="flex:1" placeholder="内容">
-        <button class="btn btn-sm btn-icon" data-a="del-kv" title="删除">🗑</button>
+        <button class="btn btn-sm btn-icon" data-a="del-kv" title="删除">${icon('trash', 15)}</button>
       </div>`).join('');
   }
 
@@ -839,7 +959,7 @@ async function openProfileManager() {
         <label class="row" style="gap:6px"><input type="checkbox" id="pf-drift" ${d.drift !== false ? 'checked' : ''}> 允许对话漂移更新</label>
       </div>
       <div class="row" style="margin-bottom:8px">
-        <button class="btn btn-sm" id="pf-import">📥 导入预填文件（senpai-model 全量字段，只补空缺不覆盖）</button>
+        <button class="btn btn-sm" id="pf-import">${icon('download', 14)} 导入预填文件（senpai-model 全量字段，只补空缺不覆盖）</button>
         <span class="hint" id="pf-import-result"></span>
       </div>
       <div class="field"><span class="label">P0 身份锚（A组 7 字段：年龄/性别/所在地/学历/信仰/婚姻家庭/称呼体系，任何对话必须正确；漂移锁定，仅此处可编辑）</span>
@@ -850,7 +970,7 @@ async function openProfileManager() {
           <button class="btn btn-sm" data-a="add-kv" data-layer="${L}">＋ 添加字段</button>
         </div>`).join('')}
       <div class="row" style="margin:14px 0 6px">
-        <button class="btn btn-primary btn-sm" id="pf-save">💾 保存档案</button>
+        <button class="btn btn-primary btn-sm" id="pf-save">${icon('save', 14)} 保存档案</button>
         <span class="hint grow" id="pf-saved"></span>
       </div>
       <h4 style="margin:10px 0 6px">变更日志（${(d.log || []).length}）</h4>
@@ -871,7 +991,7 @@ async function openProfileManager() {
           </div>`).join('') || '<p class="hint" style="padding:8px 0">暂无变更。角色扮演聊天中出现的身份信息变化会自动漂移到这里。</p>'}
       </div>
       <h4 style="margin:12px 0 6px">满载归档 <span class="hint" id="pf-arc-n"></span></h4>
-      <div id="pf-archive" class="pf-log" style="max-height:160px;overflow:auto"><p class="hint" style="padding:8px 0">加载中…</p></div>`;
+      <div id="pf-archive" class="pf-log" style="max-height:160px;overflow:auto"><div style="padding:8px 0">${skeletonBlock(2)}</div></div>`;
 
     // 交互：加/删字段行
     body.querySelectorAll('[data-a=add-kv]').forEach(btn => btn.addEventListener('click', () => {
@@ -881,7 +1001,7 @@ async function openProfileManager() {
       row.className = 'row prof-kv';
       row.dataset.layer = L;
       row.style.cssText = 'gap:6px;margin:4px 0';
-      row.innerHTML = `<input type="text" class="pf-key" maxlength="12" style="width:120px" placeholder="字段名"><input type="text" class="pf-val" maxlength="160" style="flex:1" placeholder="内容"><button class="btn btn-sm btn-icon" data-a="del-kv" title="删除">🗑</button>`;
+      row.innerHTML = `<input type="text" class="pf-key" maxlength="12" style="width:120px" placeholder="字段名"><input type="text" class="pf-val" maxlength="160" style="flex:1" placeholder="内容"><button class="btn btn-sm btn-icon" data-a="del-kv" title="删除">${icon('trash', 15)}</button>`;
       host.appendChild(row);
       row.querySelector('.pf-key').focus();
     }));
@@ -920,11 +1040,11 @@ async function openProfileManager() {
       const res = body.querySelector('#pf-import-result');
       try {
         const r = await dp.profileSeed(p);
-        res.textContent = `✓ 新增 P0 ${r.added.P0} / P1 ${r.added.P1} / P2 ${r.added.P2} / P2b ${r.added.P2b} / P3 ${r.added.P3} 字段（已有值未动）`;
+        res.textContent = `已新增 P0 ${r.added.P0} / P1 ${r.added.P1} / P2 ${r.added.P2} / P2b ${r.added.P2b} / P3 ${r.added.P3} 字段（已有值未动）`;
         toast('预填导入完成', 'ok');
         doc = await dp.profileGet();
         renderProfile(doc);
-      } catch (err) { res.textContent = '✗ ' + errText(err); toast(errText(err), 'error'); }
+      } catch (err) { res.textContent = '失败：' + errText(err); toast(errText(err), 'error'); }
     });
     // 回滚
     body.querySelectorAll('[data-a=revert]').forEach(btn => btn.addEventListener('click', async () => {
@@ -964,7 +1084,7 @@ async function openProfileManager() {
 }
 
 // ---------- 搜索账本面板（/search ledger；角色无感知） ----------
-const STATUS_CN = { ok: '✓ 成功', blocked: '⛔ 拦截', denied: '🚫 拒绝', failed: '✗ 失败', cached: '♻ 缓存' };
+const STATUS_CN = { ok: '成功', blocked: '拦截', denied: '拒绝', failed: '失败', cached: '缓存' };
 const TRACK_CN = { designated: '指定轨', autonomous: '自主轨' };
 let ledgerModalBody = null, ledgerRange = 'all';
 // ---------- 本轮 API 消耗外显（模型用量回执汇总） ----------
@@ -996,8 +1116,8 @@ function usageMeterText(u) {
 }
 
 async function openDisciplineModal() {
-  const { body } = openModal({ title: '📐 记忆整理纪律 · 角色无感知', width: '640px' });
-  body.innerHTML = '<p class="hint" style="padding:12px">加载中…</p>';
+  const { body } = openModal({ title: '记忆整理纪律 · 角色无感知', width: '640px' });
+  body.innerHTML = `<div style="padding:12px">${skeletonBlock(3)}</div>`;
   let sections;
   try { sections = await dp.disciplineView(); } catch (err) { body.innerHTML = `<p class="hint">加载失败：${esc(errText(err))}</p>`; return; }
   const order = ['extract', 'drift', 'overwrite'];
@@ -1015,7 +1135,7 @@ async function openDisciplineModal() {
 }
 
 async function openSearchLedger() {
-  const { body } = openModal({ title: '🌐 联网搜索账本 · 角色无感知', width: '700px' });
+  const { body } = openModal({ title: '联网搜索账本 · 角色无感知', width: '700px' });
   ledgerModalBody = body;
   await refreshLedger();
 }
@@ -1027,7 +1147,7 @@ async function refreshLedger() {
   const s = data.summary || {};
   const fmtTok = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n || 0));
   body.innerHTML = `
-    <p class="hint" style="margin:4px 0 10px">每一次检索（含被拦截/被拒/失败/缓存）都落账。自主轨条目可裁决：✓ 认可计入有效产出；✗ 划除后角色汇报时须表述为「已作废」。「轨道存疑」= 自报指定轨但当轮指令与查询词重合度低，建议抽查。花费为应用层估算 token（搜索源多不返回精确用量）。</p>
+    <p class="hint" style="margin:4px 0 10px">每一次检索（含被拦截/被拒/失败/缓存）都落账。自主轨条目可裁决：「认可」计入有效产出；「划除」后角色汇报时须表述为「已作废」。「轨道存疑」= 自报指定轨但当轮指令与查询词重合度低，建议抽查。花费为应用层估算 token（搜索源多不返回精确用量）。</p>
     <div class="row" style="gap:8px;margin-bottom:10px">
       ${[['today', '今日'], ['week', '本周'], ['month', '本月'], ['all', '全部']].map(([v, l]) =>
         `<button class="btn btn-sm ${ledgerRange === v ? 'btn-primary' : ''}" data-range="${v}">${l}</button>`).join('')}
@@ -1053,8 +1173,8 @@ async function refreshLedger() {
           <div class="hint">${esc(e.source)} · ${e.results} 条结果 · ${e.estTokens || 0} tok 估算${e.status === 'cached' ? ' · 缓存命中（未重复请求）' : ''}${e.blockRule ? ' · 拦截规则：' + esc(e.blockRule) : ''}${e.verdict === 'rejected' ? ' · 已划除' : e.verdict === 'accepted' ? ' · 已认可' : ''}</div>
           ${e.track === 'autonomous' && e.status === 'ok' && !e.verdict ? `
             <div class="row" style="margin-top:4px;gap:6px">
-              <button class="btn btn-sm btn-primary" data-a="accept" data-id="${esc(e.id)}">✓ 认可</button>
-              <button class="btn btn-sm" data-a="reject" data-id="${esc(e.id)}">✗ 划除</button>
+              <button class="btn btn-sm btn-primary" data-a="accept" data-id="${esc(e.id)}">${icon('check', 13)} 认可</button>
+              <button class="btn btn-sm" data-a="reject" data-id="${esc(e.id)}">${icon('close', 13)} 划除</button>
             </div>` : ''}
         </div>`).join('') || '<p class="hint" style="padding:12px 0">还没有任何检索记录。</p>'}
     </div>`;
@@ -1076,7 +1196,7 @@ dp.on('search:ledger-changed', () => { if (ledgerModalBody) refreshLedger(); });
 // 合计口径 = 输入+输出+缓存读+缓存写（思考 token 含在输出里）；各工具「输入是否含缓存」语义
 // 差异已在主进程归一。限额是用户自填的本地参考值（官方额度都在各账号云端，本地拿不到）。
 const TK_WINDOWS = [['today', '今日'], ['d7', '近7天'], ['d30', '近30天'], ['all', '全部']];
-const TK_TABS = [['sessions', '💬 会话'], ['models', '🧠 模型'], ['devices', '💻 设备'], ['limits', '⚙ 限额与数据源']];
+const TK_TABS = [['sessions', '会话'], ['models', '模型'], ['devices', '设备'], ['limits', '限额与数据源']];
 const TK_STATUS_CN = { ok: '', meta: '元信息', empty: '无数据', missing: '未安装', error: '读取失败' };
 let tkModalBody = null, tkRange = 'today', tkTab = 'sessions';
 let tkCfg = { devices: [], limits: {} }, tkData = null, tkToolFilter = 'all';
@@ -1190,7 +1310,7 @@ function tkDevicesHtml() {
       ${devs.map(d => {
         const w = d.windows[tkRange] || { total: 0, requests: 0 };
         return `<div class="tk-card">
-          <div class="tk-card-head"><b>💻 ${esc(d.label)}</b>${d.label === tkData.hostname ? '<span class="tk-status st-ok">本机</span>' : ''}</div>
+          <div class="tk-card-head"><b>${icon('monitor', 14)} ${esc(d.label)}</b>${d.label === tkData.hostname ? '<span class="tk-status st-ok">本机</span>' : ''}</div>
           <div class="tk-big">${fmtTok(w.total)}<span class="tk-unit"> tok</span></div>
           <div class="tk-sub">${w.requests} 次调用 · ${(d.tools || []).slice(0, 4).map(t => `${esc((tkData.tools.find(x => x.id === t.tool) || {}).name || t.tool)} ${fmtTok(t.total)}`).join(' · ')}</div>
         </div>`;
@@ -1203,12 +1323,12 @@ function tkDevicesHtml() {
         <div class="row tk-dev-row" data-i="${i}" style="gap:6px;margin:4px 0">
           <input type="text" class="tk-in" data-k="label" value="${esc(v.label)}" maxlength="40" style="width:120px" placeholder="设备名">
           <input type="text" class="tk-in" data-k="path" value="${esc(v.path)}" maxlength="300" style="flex:1" placeholder="如 D:\\sync\\pc2-home（该机用户主目录）">
-          <button class="btn btn-sm" data-a="tk-dev-del" data-i="${i}">🗑</button>
+          <button class="btn btn-sm btn-icon" data-a="tk-dev-del" data-i="${i}" title="删除">${icon('trash', 15)}</button>
         </div>`).join('') || '<p class="hint" id="tkDevEmpty">（暂无额外设备）</p>'}
     </div>
     <div class="row" style="gap:6px;margin-top:6px">
       <button class="btn btn-sm" data-a="tk-dev-add">＋ 添加</button>
-      <button class="btn btn-sm btn-primary" data-a="tk-dev-save">💾 保存并重扫</button>
+      <button class="btn btn-sm btn-primary" data-a="tk-dev-save">${icon('save', 14)} 保存并重扫</button>
       <span class="hint grow" id="tkDevSaved"></span>
     </div>`;
 }
@@ -1228,7 +1348,7 @@ function tkLimitsHtml() {
       }).join('')}
     </div>
     <div class="row" style="gap:8px;margin-top:10px">
-      <button class="btn btn-sm btn-primary" data-a="tk-lim-save">💾 保存限额</button>
+      <button class="btn btn-sm btn-primary" data-a="tk-lim-save">${icon('save', 14)} 保存限额</button>
       <span class="hint grow" id="tkLimSaved"></span>
     </div>`;
 }
@@ -1253,7 +1373,7 @@ function tkRender() {
     </div>
     <div class="tk-cards">${(tkData.tools || []).map(tkCard).join('')}</div>
     <div class="tabs" style="margin:12px 0 8px">
-      ${TK_TABS.map(([v, l]) => `<div class="tab ${tkTab === v ? 'active' : ''}" data-tk-tab="${v}">${l}</div>`).join('')}
+      ${TK_TABS.map(([v, l]) => `<div class="tab ${tkTab === v ? 'active' : ''}" data-tk-tab="${v}" role="tab" tabindex="0" aria-selected="${tkTab === v}">${l}</div>`).join('')}
       <span class="grow"></span>
       <span class="hint" title="扫描耗时 ${tkData.scanMs}ms${tkData.zstd ? ' · zstd 解压组件：' + tkData.zstd : ' · 无 zstd 组件：DSH 压缩会话读不了明细'}">扫描于 ${fmtRel(Date.parse(tkData.scannedAt))} · 每 60s 自动刷新</span>
     </div>
@@ -1286,7 +1406,13 @@ function bindTkEvents() {
   const body = tkModalBody;
   if (!body) return;
   body.querySelectorAll('[data-range]').forEach(btn => btn.addEventListener('click', () => { tkRange = btn.dataset.range; tkRender(); }));
-  body.querySelectorAll('[data-tk-tab]').forEach(t => t.addEventListener('click', () => { tkTab = t.dataset.tkTab; tkRender(); }));
+  body.querySelectorAll('[data-tk-tab]').forEach(t => {
+    const pick = () => { tkTab = t.dataset.tkTab; tkRender(); };
+    t.addEventListener('click', pick);
+    t.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); }
+    });
+  });
   const refreshBtn = body.querySelector('[data-a=tk-refresh]');
   if (refreshBtn) refreshBtn.addEventListener('click', () => tkLoad());
   const filterSel = body.querySelector('#tkToolFilter');
@@ -1324,7 +1450,7 @@ function bindTkEvents() {
 async function openTokenBoard() {
   // 防重复：面板已开着（宠物菜单再点一次/推送与 pending 双触发）→ 只刷新不叠弹窗
   if (tkModalBody && tkModalBody.isConnected) { tkLoad(); return; }
-  const { body } = openModal({ title: '⚡ Token 看板 · 11 个 AI 工具 + deskpal · 角色无感知', width: '820px' });
+  const { body } = openModal({ title: 'Token 看板 · 11 个 AI 工具 + deskpal · 角色无感知', width: '820px' });
   tkModalBody = body;
   try { tkCfg = await dp.tokenBoardConfig(); } catch (_) {}
   await tkLoad();
@@ -1338,7 +1464,7 @@ async function openTokenBoard() {
 async function tkLoad(silent) {
   const body = tkModalBody;
   if (!body || !body.isConnected) { tkModalBody = null; return; }
-  if (!silent) body.innerHTML = '<p class="hint" style="padding:12px">正在扫描各工具的本地用量记录…（首次可能要几秒）</p>';
+  if (!silent) body.innerHTML = `<div style="padding:12px">${skeletonBlock(4)}<p class="hint">正在扫描各工具的本地用量记录…（首次可能要几秒）</p></div>`;
   let data;
   try { data = await dp.tokenBoardQuery(); }
   catch (err) { body.innerHTML = `<p class="hint">加载失败：${esc(errText(err))}</p>`; return; }
@@ -1369,6 +1495,11 @@ async function doClear() {
 // ---------- 启动 ----------
 (async function boot() {
   await initTheme();
+  try {
+    const sp = await dp.spritesGet();
+    spriteSlots = (sp && sp.slots) || {};
+  } catch (_) { spriteSlots = {}; }
+  try { avatarState = (await dp.avatarGet()) || { user: null }; } catch (_) { avatarState = { user: null }; }
   await refreshSessions();
   refreshMailBadge(); // v1.5：信箱未读徽标
   histories.roleplay = await dp.chatHistory('roleplay');
@@ -1380,12 +1511,12 @@ async function doClear() {
     // 图像识别徽标：多模态可用时提示（模型名词表命中或用户强制开启）
     try {
       const v = await dp.llmVisionDetect({});
-      if (v && v.capable) main.querySelector('#modelTag').textContent += ' ·📷视觉';
+      if (v && v.capable) main.querySelector('#modelTag').textContent += ' · 视觉';
     } catch (_) {}
   } catch (_) {}
   try {
     const s = await dp.storeGet('settings');
-    permModeSel.value = (s.agent && s.agent.permissionMode) || 'read';
+    setPermMode((s.agent && s.agent.permissionMode) || 'read');
   } catch (_) {}
   loadInterrupted();
   renderAll();

@@ -20,6 +20,7 @@ const scheduleParser = require('./services/schedule/parser');
 const scheduleExcel = require('./services/schedule/excel');
 const memory = require('./services/memory');
 const userProfile = require('./services/user-profile');
+const avatars = require('./services/avatars');
 const canon = require('./services/canon');
 const norekiLink = require('./services/noreki-link');
 const searchLedger = require('./services/agent/search-ledger');
@@ -384,6 +385,25 @@ function registerIpc() {
   handle('launcher:run', async ({ id }) => launcher.runById(id));
   handle('launcher:list', () => launcher.list());
   handle('launcher:save', ({ commands }) => launcher.save(commands));
+
+  // ---------- 对话对象头像（设置→人设→对话对象；聊天窗显示 + look_user_avatar 视觉读取） ----------
+  handle('avatar:get', () => avatars.state());
+  handle('avatar:pick-user', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: '选择你的头像图片',
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'] }],
+      properties: ['openFile'],
+    });
+    if (canceled || !filePaths || !filePaths[0]) return null;
+    const st = avatars.setUserFromPath(filePaths[0]);
+    windows.broadcastAll('avatar:changed', st);
+    return st;
+  });
+  handle('avatar:reset-user', () => {
+    const st = avatars.resetUser();
+    windows.broadcastAll('avatar:changed', st);
+    return st;
+  });
 
   // ---------- 形象 ----------
   handle('sprites:get', () => store.get('sprites'));  handle('sprites:upload', ({ emotion: emo, path: src }) => {

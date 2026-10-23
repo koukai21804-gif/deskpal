@@ -2,6 +2,7 @@
 import { dp, initTheme, esc, errText, fmtMin } from '../common/ipc.js';
 import { toast } from '../common/ui.js';
 import { mountTitlebar } from '../common/windows/titlebar.js';
+import { icon } from '../common/icons.js';
 
 const app = document.getElementById('app');
 app.appendChild(mountTitlebar('deskpal · 标注应用'));
@@ -34,7 +35,7 @@ async function load() {
         <span class="grow"></span>
         <select style="min-width:110px">
           ${customs.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
-          <option value="__custom__">✏️ 自定义…</option>
+          <option value="__custom__">自定义…</option>
         </select>
       </div>
       ${u.titles && u.titles.length ? `<div class="small muted" style="line-height:1.5">窗口标题例：${esc(u.titles[0])}</div>` : ''}

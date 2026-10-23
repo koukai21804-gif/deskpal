@@ -10,6 +10,8 @@ const tools = require('./tools');
 const netSearch = require('./net-search');
 const llm = require('../llm');
 const hindsight = require('../hindsight-bridge');
+const visionCapture = require('./vision-capture');
+const avatars = require('../avatars');
 const { MAX_FILE_BYTES, MAX_DATAURL_CHARS, sniffMime, probeImage, toDataUrl } = require('./image-utils');
 
 // read_file 分段读取：大文件单段回填会把上下文撑爆，也可能被结果上限截掉而模型不知情。
@@ -98,6 +100,70 @@ tools.register({
   },
 });
 
+
+// look_user_avatar：读取对话对象在设置里上传的头像（v0.6）。
+// 与 read_image 同协议：{text, imagePart, meta}，图像由 loop 以 user 消息注入视觉上下文。
+// 不需要权限卡——那是用户自己主动上传、明确用于让角色看到的图片。
+tools.register({
+  name: 'look_user_avatar',
+  desc: '读取对话对象（用户）上传的头像并把图像送入你的视觉上下文。用户让你「看看我的头像」「我长什么样（指头像）」「我换头像了」时调用；用户没上传头像时工具会如实报错。不要凭空描述用户的长相，也不要把头像里没有的信息当成事实',
+  params: {},
+  permission: 'read',
+  enabled: true,
+  handler: async () => {
+    if (!llm.isVisionCapable()) {
+      throw new Error('当前模型未开启图像识别：请到 设置→API→「图像识别」选「强制开启」（模型须支持图像输入），或更换多模态模型');
+    }
+    const av = avatars.readUserImage();
+    if (!av) {
+      throw new Error('用户尚未上传头像：可在 设置→人设→对话对象（user 层）上传图片后再试');
+    }
+    const probe = probeImage(av.buf, av.mime);
+    const dataUrl = toDataUrl(probe.mime, probe.buf);
+    if (dataUrl.length > MAX_DATAURL_CHARS) {
+      throw new Error('头像编码后超出接口体积上限，请换一张更小的图');
+    }
+    const dims = probe.width ? `${probe.width}×${probe.height}` : '尺寸未知';
+    return {
+      ok: true,
+      text: `[look_user_avatar] 用户上传的头像｜${probe.mime}｜${dims}｜${probe.buf.length} 字节｜图像已注入视觉上下文：请基于图像实际内容作答（可描述画面/风格/角色特征），图中没有的信息不要编造`,
+      imagePart: { type: 'image_url', image_url: { url: dataUrl } },
+      meta: { tool: 'look_user_avatar', path: av.file, bytes: probe.buf.length, width: probe.width, height: probe.height, mime: probe.mime, resized: !!probe.resized },
+    };
+  },
+});
+
+// look_screen：桌面截屏识别（v0.5.1，方案借鉴 Amadeus System capture_screen.py）。
+// 截屏前隐藏 deskpal 自身窗口、黑帧校验、前台窗口标题回传；授权走 web_search 同款双轨
+// （未开启：designated 弹开启卡 / autonomous 直接拒；已开启：autonomous 逐次卡）。
+// 回执结构与 read_image 相同（{text, imagePart, meta}），loop 按 imagePart 通用注入。
+tools.register({
+  name: 'look_screen',
+  desc: '截取当前桌面画面并送入你的视觉上下文（识别屏幕上正在显示的内容）。用户明确让你看屏幕/桌面时才调用（如「看看我屏幕上这个」「桌面上这个报错是什么」）；比喻性的「你看」「你猜我看到了什么」不是截屏请求，此前看过的画面凭上下文回忆即可、不要重复截屏。多屏用 screen 指定序号（0=主屏）。截屏画面会发送给你配置的模型服务商做识别',
+  params: {
+    screen: 'string 可选：屏幕序号（0=主屏，1=副屏…），缺省主屏',
+    track: 'string designated=用户明确要求看屏幕（默认）/autonomous=你主动想看（须用户逐次批准）',
+    reason: 'string ≤60字：为什么需要看屏幕（两种轨道都必填）',
+  },
+  permission: 'read',
+  enabled: true,
+  handler: async (args, ctx) => visionCapture.lookScreen(args, ctx),
+});
+
+// look_camera：开启摄像头拍一帧识别（v0.5.1，方案借鉴 Amadeus System capture_camera.py）。
+// 感知纪律（camera_sensitive）：每次调用都先向用户弹授权卡，批准后才开摄像头，拍完即关；
+// 不设「永久开启」记忆，被拒后 60s 冷却内不再弹卡——不默认开摄像头、不持续观看。
+tools.register({
+  name: 'look_camera',
+  desc: '开启摄像头拍摄一帧当前实景并送入你的视觉上下文。仅当用户明确要求看镜头前的实景时才调用（如「开摄像头看看我」「看看我这边/镜头前这个」）；比喻性或泛指的「看」不是摄像头请求，你和用户之间的普通对话也用不着它。每次调用都会先向用户弹授权卡；拍完立即关闭摄像头，不会持续观看。画面会发送给你配置的模型服务商做识别',
+  params: {
+    camera: 'string 可选：摄像头序号（从 0 起），缺省第 0 个',
+    reason: 'string ≤60字：为什么需要开摄像头（必填）',
+  },
+  permission: 'read',
+  enabled: true,
+  handler: async (args, ctx) => visionCapture.lookCamera(args, ctx),
+});
 
 // save_memory：角色的真实长期记忆写入（写应用记忆库 memory/roleplay，非文件系统，
 // 不属于文件权限管辖，任何模式可用）。「记下了/写进长期记忆」的承诺由此真实落地；

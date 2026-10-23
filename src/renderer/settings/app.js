@@ -1,6 +1,7 @@
 // 设置页：人设 / 形象 / 配色 / API / 指令 / 分类 / 日程偏好 / 关于 —— 全部即时保存
 import { dp, initTheme, esc, errText, debounce } from '../common/ipc.js';
 import { toast, confirmBox } from '../common/ui.js';
+import { icon } from '../common/icons.js';
 import { mountTitlebar } from '../common/windows/titlebar.js';
 import { renderPet, EMOTION_KEYS } from '../pet/sprite.js';
 
@@ -9,31 +10,47 @@ const EMO_CN = { normal: '平常', happy: '开心', surprised: '惊讶', angry: 
 const app = document.getElementById('app');
 app.appendChild(mountTitlebar('deskpal · 设置'));
 
-const TABS = [
-  ['persona', '🐱 人设'], ['sprite', '🎨 形象'], ['theme', '🌈 配色'], ['api', '🔌 API'],
-  ['commands', '🚀 指令'], ['categories', '🏷 分类'], ['schedule', '⏰ 日程偏好'], ['about', 'ℹ️ 关于'],
+const TAB_GROUPS = [
+  ['角色', [['persona', '人设', 'user'], ['sprite', '形象', 'image']]],
+  ['外观', [['theme', '配色', 'palette']]],
+  ['能力', [['api', 'API 与模型', 'plug'], ['commands', '快捷指令', 'terminal'],
+            ['categories', '应用分类', 'tag'], ['schedule', '日程偏好', 'clock']]],
+  ['系统', [['about', '关于 deskpal', 'info']]],
 ];
 
 const root = document.createElement('div');
 root.className = 'set-wrap';
 root.innerHTML = `
-  <div class="side-nav">${TABS.map(([k, n]) => `<div class="nav-item" data-tab="${k}">${n}</div>`).join('')}</div>
+  <div class="side-nav" role="tablist">${TAB_GROUPS.map(([g, items]) =>
+    `<div class="nav-group-label">${g}</div>` +
+    items.map(([k, n, ic]) =>
+      `<div class="nav-item" data-tab="${k}" role="tab" tabindex="0">${icon(ic, 16)}<span>${n}</span></div>`
+    ).join('')).join('')}</div>
   <div class="set-body" id="body"></div>`;
 app.appendChild(root);
 const body = root.querySelector('#body');
+const sideNav = root.querySelector('.side-nav');
 
 let tabLeave = null; // 当前标签页的离开钩子（如：指令页自动保存）
 
 function switchTab(tab) {
   if (tabLeave) { const leave = tabLeave; tabLeave = null; leave().catch(() => {}); }
-  root.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.tab === tab));
+  sideNav.querySelectorAll('.nav-item').forEach(n => {
+    const on = n.dataset.tab === tab;
+    n.classList.toggle('active', on);
+    n.setAttribute('aria-selected', String(on));
+  });
   ({ persona: renderPersona, sprite: renderSprite, theme: renderTheme, api: renderApi,
      commands: renderCommands, categories: renderCategories, schedule: renderSchedulePref, about: renderAbout }[tab] || renderAbout)();
 }
 
-root.querySelector('.side-nav').addEventListener('click', (e) => {
+sideNav.addEventListener('click', (e) => {
   const t = e.target.closest('.nav-item');
   if (t) switchTab(t.dataset.tab);
+});
+sideNav.addEventListener('keydown', (e) => {
+  const t = e.target.closest('.nav-item');
+  if (t && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); switchTab(t.dataset.tab); }
 });
 
 const saveDebounced = debounce((name, patch) => dp.storeSet(name, patch).catch(err => toast(errText(err), 'error')), 300);
@@ -49,8 +66,18 @@ const CANON_GROUPS = [
   { key: 'signature', label: 'L4 语言签名', fields: [['speechStyle', '说话风格（语速/术语习惯）', 3], ['emotionalPatterns', '情绪六态外部表现', 5]] },
 ];
 
+// 用户头像预览（数据目录里的图片 → file:// URL；未上传回落到人形图标）
+function avatarPreviewHtml(st) {
+  const u = st && st.user;
+  if (!u || !u.path) return icon('user', 26);
+  return `<img src="file:///${String(u.path).replace(/\\/g, '/')}" alt="我的头像" draggable="false">`;
+}
+
 async function renderPersona() {
-  const { persona, status: seal } = await dp.canonGet();
+  const [{ persona, status: seal }, avatarSt] = await Promise.all([
+    dp.canonGet(),
+    dp.avatarGet().catch(() => ({ user: null })),
+  ]);
   const c = persona.canon, ops = persona.ops, user = persona.user;
   const F = (id, label, val, ph = '') =>
     `<div class="field"><span class="label">${label}</span><textarea id="${id}" rows="${id.includes('catchphrases') ? 2 : 3}" placeholder="${ph}">${esc(val || '')}</textarea></div>`;
@@ -59,17 +86,17 @@ async function renderPersona() {
 
   body.innerHTML = `<div class="set-section">
     <div class="card" id="profileCard" style="margin-bottom:18px">
-      <div class="row"><b>📦 宠物设定档案</b><span class="hint grow" style="margin-left:8px">人设 + 形象差分图 + 缩放绑定为完整设定；可保存多套、一键切换、导出 .pet.json 分享。全部角色（含导入）统一遵循 canon/ops/user 分层与锁层</span></div>
+      <div class="row"><b>宠物设定档案</b><span class="hint grow" style="margin-left:8px">人设 + 形象差分图 + 缩放绑定为完整设定；可保存多套、一键切换、导出 .pet.json 分享。全部角色（含导入）统一遵循 canon/ops/user 分层与锁层</span></div>
       <div class="row" style="margin:10px 0 4px">
         <input type="text" id="profName" placeholder="设定名称，如：缇托·日常版" style="width:210px">
-        <button class="btn btn-sm btn-primary" id="profSave">💾 保存当前设定</button>
-        <button class="btn btn-sm" id="profImport">📥 导入设定文件</button>
+        <button class="btn btn-sm btn-primary" id="profSave">${icon('save', 14)} 保存当前设定</button>
+        <button class="btn btn-sm" id="profImport">${icon('download', 14)} 导入设定文件</button>
       </div>
       <div id="profList"></div>
     </div>
 
     <div class="card" style="margin-bottom:18px;border-left:4px solid var(--dp-accent)">
-      <div class="row"><b>🔒 人格宪法（canon 锁层）</b>
+      <div class="row"><b>${icon('lock', 15)} 人格宪法（canon 锁层）</b>
         <span class="hint grow" style="margin-left:8px">身份内核：改到什么程度，她就不再是她。改动需逐项批准并留痕（谁/何时/改了什么/为什么）</span></div>
       <div class="hint" style="margin:6px 0 10px" id="canonStatus"></div>
       <div id="canonForm">
@@ -80,21 +107,21 @@ async function renderPersona() {
         }).join('')}
       </div>
       <div class="row" style="margin-top:10px" id="canonActions">
-        <button class="btn btn-sm" id="canonUnlock">🔓 申请修改</button>
-        <button class="btn btn-sm btn-primary" id="canonSign" style="${seal.status === 'approved' ? 'display:none' : ''}">✍ 签署批准</button>
-        <button class="btn btn-sm" id="canonReprovision" style="${seal.protection === 'protected' && !seal.recoverPending ? 'display:none' : ''}">🔑 重新配置保护${seal.recoverPending ? `（${seal.unsignedRevisions} 条未签名修订待收编）` : ''}</button>
+        <button class="btn btn-sm" id="canonUnlock">${icon('unlock', 14)} 申请修改</button>
+        <button class="btn btn-sm btn-primary" id="canonSign" style="${seal.status === 'approved' ? 'display:none' : ''}">${icon('pencil', 14)} 签署批准</button>
+        <button class="btn btn-sm" id="canonReprovision" style="${seal.protection === 'protected' && !seal.recoverPending ? 'display:none' : ''}">${icon('key', 14)} 重新配置保护${seal.recoverPending ? `（${seal.unsignedRevisions} 条未签名修订待收编）` : ''}</button>
         <input type="text" id="canonReason" placeholder="批准理由（必填，将写入变更留痕）" style="flex:1;display:none" maxlength="200">
-        <button class="btn btn-sm btn-primary" id="canonSubmit" style="display:none">✅ 提交批准</button>
-        <button class="btn btn-sm" id="canonCancel" style="display:none">✖ 放弃</button>
+        <button class="btn btn-sm btn-primary" id="canonSubmit" style="display:none">${icon('checkCircle', 14)} 提交批准</button>
+        <button class="btn btn-sm" id="canonCancel" style="display:none">${icon('close', 14)} 放弃</button>
       </div>
-      <details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px;color:var(--dp-text-muted)">📜 变更留痕（provenance）</summary>
+      <details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px;color:var(--dp-text-muted)">${icon('clock', 14)} 变更留痕（provenance）</summary>
         <div id="canonHistory" style="margin-top:8px"></div></details>
       <details style="margin-top:6px"><summary style="cursor:pointer;font-size:13px;color:var(--dp-text-muted)">⏱ 表现层快照（ops 误改/误清空后的兜底，保留最近 10 份）</summary>
         <div id="opsHistory" style="margin-top:8px"></div></details>
     </div>
 
     <div id="personaForm">
-    <h3 style="margin-top:0">🛠 表现层（ops，可迭代：语气细节/口头禅/外貌/自定义指令，改动即时生效）</h3>
+    <h3 style="margin-top:0">表现层（ops，可迭代：语气细节/口头禅/外貌/自定义指令，改动即时生效）</h3>
     <div class="row" style="gap:12px">
       <div class="field grow"><span class="label">一句话简介</span><input type="text" id="p-tagline" value="${esc(ops.tagline)}" style="width:100%"></div>
       <div class="field" style="width:160px"><span class="label">语言</span>
@@ -105,12 +132,22 @@ async function renderPersona() {
     ${F('p-catchphrases', '口头禅（每行一句；句中可用 [开心] [惊讶] [悲伤] 等标签，点到这句时宠物会同步切换成对应表情）', ops.catchphrases)}
     ${F('p-thinkingLogic', '思维逻辑', ops.thinkingLogic)}
     ${F('p-customPrompt', '自定义指令（附加到 system prompt 末尾）', ops.customPrompt)}
-    <h3>👤 对话对象（user 层）</h3>
+    <h3>对话对象（user 层）</h3>
+    <div class="avatar-edit">
+      <div class="avatar-preview" id="userAvatarPreview">${avatarPreviewHtml(avatarSt)}</div>
+      <div class="avatar-edit-main">
+        <div class="row" style="gap:8px">
+          <button class="btn btn-sm" id="userAvatarPick">${icon('upload', 14)} 上传头像</button>
+          <button class="btn btn-sm" id="userAvatarReset" ${avatarSt && avatarSt.user ? '' : 'disabled'}>恢复默认</button>
+        </div>
+        <p class="hint">头像会显示在聊天窗你的消息旁。模型具备视觉感知（设置 → API → 图像识别）时，角色可调用 look_user_avatar 看到并识别它；未开启视觉则只显示、不识别。</p>
+      </div>
+    </div>
     <div class="row" style="gap:12px">
       <div class="field grow"><span class="label">称呼</span><input type="text" id="u-name" value="${esc(user.name)}" maxlength="12"></div>
     </div>
     <div class="field"><span class="label">介绍（宠物眼中的你，帮助对话更贴心；更细的滚动档案在聊天窗输入 /user profile 维护）</span><textarea id="u-description" rows="2">${esc(user.description || '')}</textarea></div>
-    <details><summary style="cursor:pointer;font-size:13px;color:var(--dp-text-muted)">👁 实时预览：角色扮演 system prompt</summary>
+    <details><summary style="cursor:pointer;font-size:13px;color:var(--dp-text-muted)">实时预览：角色扮演 system prompt</summary>
       <div class="prompt-preview" id="promptPreview" style="margin-top:8px"></div></details>
     </div>
   </div>`;
@@ -118,14 +155,14 @@ async function renderPersona() {
   // ---- 宪法状态与留痕 ----
   const sealBox = body.querySelector('#canonStatus');
   const signState = seal.status === 'approved'
-    ? `<span style="color:var(--dp-ok)">已签署 ✓（${esc(seal.approvedBy || '')} ${esc(String(seal.approvedAt || '').replace('T', ' ').slice(0, 16))}）</span>`
+    ? `<span style="color:var(--dp-ok)">已签署（${esc(seal.approvedBy || '')} ${esc(String(seal.approvedAt || '').replace('T', ' ').slice(0, 16))}）</span>`
     : '草案（行为约束生效中，批准待签署）';
   const PROT_CN = {
-    protected: '<span style="color:var(--dp-ok)">🛡 签名保护生效中</span>',
-    degraded: '<span style="color:var(--dp-warn, #d90)">⚠ 签名保护降级（密钥不可用：期间修订将标记未签名，不判篡改）</span>',
+    protected: '<span style="color:var(--dp-ok)">签名保护生效中</span>',
+    degraded: '<span style="color:var(--dp-warn)">签名保护降级（密钥不可用：期间修订将标记未签名，不判篡改）</span>',
     unsigned: '○ 未配置签名保护',
   };
-  sealBox.innerHTML = `宪法版本 <b>v${seal.version}</b> · ${esc(seal.doc)} · ${signState} · ${PROT_CN[seal.protection] || esc(seal.protection)} · 封存于 ${esc(String(seal.sealedAt || '').replace('T', ' ').slice(0, 16))} · 完整性 ${seal.intact ? '✓ 与封存一致' : '<span style="color:var(--dp-danger)">✗ 不一致，已按快照恢复（见留痕）</span>'}`;
+  sealBox.innerHTML = `宪法版本 <b>v${seal.version}</b> · ${esc(seal.doc)} · ${signState} · ${PROT_CN[seal.protection] || esc(seal.protection)} · 封存于 ${esc(String(seal.sealedAt || '').replace('T', ' ').slice(0, 16))} · 完整性 ${seal.intact ? '与封存一致' : '<span style="color:var(--dp-danger)">不一致，已按快照恢复（见留痕）</span>'}`;
   const histHost = body.querySelector('#canonHistory');
   const entries = [...(seal.history || [])].reverse();
   histHost.innerHTML = entries.length ? entries.slice(0, 30).map(e => `
@@ -154,7 +191,7 @@ async function renderPersona() {
     let pending = [];
     try { pending = await dp.canonPendingAmendments(); } catch (_) { pending = []; }
     const pendingTxt = pending.length
-      ? `\n⚠ 存在 ${pending.length} 条未签名修订（密钥降级期间产生），收编前请逐条核对：\n` +
+      ? `\n注意：存在 ${pending.length} 条未签名修订（密钥降级期间产生），收编前请逐条核对：\n` +
         pending.slice(0, 6).map((a, i) => `${i + 1}. ${String(a.at || '').replace('T', ' ').slice(5, 16)} ${a.type}${a.reason ? '（' + a.reason + '）' : ''}：${(a.diff || []).map(d => `${d.path}「${d.old}」→「${d.new}」`).join('；') || '（无字段级 diff）'}`).join('\n') +
         (pending.length > 6 ? `\n…其余 ${pending.length - 6} 条见「变更留痕」` : '') + '\n\n'
       : '';
@@ -265,6 +302,28 @@ async function renderPersona() {
 
   const formEl = body.querySelector('#personaForm');
   formEl.querySelectorAll('input,textarea,select').forEach(el => el.addEventListener('input', el.id.startsWith('u-') ? onUserChange : onChange));
+  // ---- 对话对象头像：上传/恢复（落盘在主进程数据目录，聊天窗经 avatar:changed 即时更新） ----
+  const avPreview = body.querySelector('#userAvatarPreview');
+  const avReset = body.querySelector('#userAvatarReset');
+  const paintAvatar = (st) => {
+    avPreview.innerHTML = avatarPreviewHtml(st);
+    avReset.disabled = !(st && st.user);
+  };
+  body.querySelector('#userAvatarPick').addEventListener('click', async () => {
+    try {
+      const st = await dp.avatarPickUser();
+      if (!st) return; // 用户取消选择
+      paintAvatar(st);
+      toast('头像已更新（聊天窗即时生效）', 'ok');
+    } catch (err) { toast(errText(err), 'error'); }
+  });
+  avReset.addEventListener('click', async () => {
+    try {
+      const st = await dp.avatarResetUser();
+      paintAvatar(st);
+      toast('已恢复默认头像', 'ok');
+    } catch (err) { toast(errText(err), 'error'); }
+  });
   // 初始预览
   dp.buildSystemPreview().then(s => { const el = body.querySelector('#promptPreview'); if (el) el.textContent = s; });
 
@@ -303,7 +362,7 @@ async function loadProfiles() {
       <span class="grow"></span>
       <button class="btn btn-sm btn-primary" data-a="apply" data-id="${p.id}">应用</button>
       <button class="btn btn-sm" data-a="export" data-id="${p.id}">导出</button>
-      <button class="btn btn-sm btn-icon" data-a="del" data-id="${p.id}" title="删除">🗑</button>`;
+      <button class="btn btn-sm btn-icon" data-a="del" data-id="${p.id}" title="删除">${icon('trash', 15)}</button>`;
     row.addEventListener('click', async (e) => {
       const btn = e.target.closest('button');
       if (!btn) return;
@@ -396,12 +455,12 @@ async function renderTheme() {
     <h3 style="margin-top:0">按钮与强调色</h3>
     <div class="accent-grid">
       ${presets.map(p => `
-        <div class="accent-card ${theme.accent.toLowerCase() === p.accent.toLowerCase() ? 'active' : ''}" data-color="${p.accent}">
-          <div class="swatch" style="background:${p.accent}"></div>${p.name}
-        </div>`).join('')}
-      <div class="accent-card" data-custom="1">
-        <div class="swatch" style="background:${theme.accent};display:flex;align-items:center;justify-content:center;color:#fff">🎨</div>自定义
-      </div>
+        <button class="accent-card" data-color="${p.accent}" aria-pressed="${theme.accent.toLowerCase() === p.accent.toLowerCase()}">
+          <span class="swatch" style="background:${p.accent}"></span>${p.name}
+        </button>`).join('')}
+      <button class="accent-card" data-custom="1" aria-pressed="false">
+        <span class="swatch" style="background:${theme.accent};color:var(--dp-accent-fg)">${icon('palette', 18)}</span>自定义
+      </button>
     </div>
     <div class="row" style="margin-top:14px;gap:10px">
       <input type="color" id="accentPick" value="${theme.accent}" style="width:52px;height:36px">
@@ -409,7 +468,7 @@ async function renderTheme() {
     </div>
     <h3>明暗模式</h3>
     <div class="row">
-      ${[['light', '☀️ 浅色'], ['dark', '🌙 深色'], ['system', '🖥 跟随系统']].map(([v, l]) => `
+      ${[['light', '浅色'], ['dark', '深色'], ['system', '跟随系统']].map(([v, l]) => `
         <label class="chip clickable"><input type="radio" name="mode" value="${v}" ${theme.mode === v ? 'checked' : ''}> ${l}</label>`).join('')}
     </div>
     <p class="hint">配色对所有窗口即时生效（气泡、按钮、统计图…）。</p>
@@ -445,6 +504,7 @@ async function renderApi() {
   const cur = PRESETS.find(p => p.endpoint === api.endpoint) || PRESETS[0];
   const P = api.params || {};
   const ws = settings.agent && settings.agent.webSearch || { enabled: false, autonomousDailyLimit: 100, cooldownMin: 10, blockedTopics: [] };
+  const vc = settings.agent && settings.agent.visionCapture || { screenEnabled: false };
   const wsTopics = (ws.blockedTopics || []).join('\n');
 
   body.innerHTML = `<div class="set-section">
@@ -458,10 +518,10 @@ async function renderApi() {
           <input type="text" id="a-model" value="${esc(api.model)}" style="width:100%" autocomplete="off">
           <div id="a-model-menu" hidden style="position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:60;max-height:264px;overflow-y:auto;background:var(--dp-panel);border:1px solid var(--dp-border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.16);padding:4px"></div>
         </div>
-        <button class="btn btn-sm" id="a-model-fetch" title="从接口拉取可用模型列表">🔄 获取模型</button>
+        <button class="btn btn-sm" id="a-model-fetch" title="从接口拉取可用模型列表">${icon('refresh', 14)} 获取模型</button>
       </div>
       <div class="hint" id="a-model-status"></div></div>
-    <div class="field"><span class="label">图像识别（多模态 Vision）——开启后 Agent 可用 read_image 工具读取图片文件</span>
+    <div class="field"><span class="label">图像识别（多模态 Vision）——开启后 Agent 可用 read_image 读图片、look_screen 看桌面、look_camera 开摄像头识别</span>
       <select id="a-vision" style="max-width:360px">
         <option value="auto" ${(api.vision === undefined || api.vision === 'auto') ? 'selected' : ''}>自动检测（按模型名识别，推荐）</option>
         <option value="on" ${api.vision === true ? 'selected' : ''}>强制开启（模型支持图像输入）</option>
@@ -470,7 +530,7 @@ async function renderApi() {
       <div class="hint" id="a-vision-hint"></div></div>
     <div class="field"><span class="label">API Key（${api.hasKey ? '已配置 ●' : '未配置'}，经系统安全存储加密）</span>
       <input type="password" id="a-key" placeholder="${api.hasKey ? '留空则不修改' : 'sk-...'}" autocomplete="new-password"></div>
-    <details style="margin:8px 0 14px"><summary style="cursor:pointer;font-size:13px;color:var(--dp-text-muted)">⚙️ 高级参数</summary>
+    <details style="margin:8px 0 14px"><summary style="cursor:pointer;font-size:13px;color:var(--dp-text-muted)">高级参数</summary>
       <div style="margin-top:10px">
         ${[['temperature', '温度', 0, 2, 0.05], ['maxTokens', '最大 tokens', 256, 8192, 128], ['topP', 'top_p', 0, 1, 0.05], ['frequencyPenalty', '频率惩罚', 0, 2, 0.05], ['presencePenalty', '存在惩罚', 0, 2, 0.05]]
           .map(([k, label, min, max, step]) => `
@@ -486,14 +546,14 @@ async function renderApi() {
     <p class="hint">聊天、陪读剧情生成、日程解析、时间报告都需要它。Key 使用 Windows 凭据保护（safeStorage）加密存储。</p>
   </div>
   <div class="set-section">
-    <h3 style="margin-top:0">🎬 视频解析（陪读视频源：B站 / YouTube / MP4 直链 / 本地视频）</h3>
+    <h3 style="margin-top:0">视频解析（陪读视频源：B站 / YouTube / MP4 直链 / 本地视频）</h3>
     <p class="hint">流程：优先抓取视频字幕（不花转写费）；无字幕时下载音频做语音转写（需下方 ASR 配置）。解析结果为带时间戳的文稿，可生成「陪读剧情」或进「自由提问」模式。</p>
     <div class="field"><span class="label">工具链状态（yt-dlp 抓取字幕/音频，ffmpeg 提取音轨）</span>
       <div id="vid-probe" class="hint">检测中…</div>
       <div class="row" style="margin-top:6px">
-        <button class="btn btn-sm" id="vid-import-ytdlp">📥 导入 yt-dlp…</button>
-        <button class="btn btn-sm" id="vid-import-ffmpeg">📥 导入 ffmpeg…</button>
-        <button class="btn btn-sm" id="vid-reprobe">🔄 重新检测</button>
+        <button class="btn btn-sm" id="vid-import-ytdlp">${icon('download', 14)} 导入 yt-dlp…</button>
+        <button class="btn btn-sm" id="vid-import-ffmpeg">${icon('download', 14)} 导入 ffmpeg…</button>
+        <button class="btn btn-sm" id="vid-reprobe">${icon('refresh', 14)} 重新检测</button>
       </div>
       <p class="hint">「导入」从本机选择已有的 exe（例如 Paper2Galgame 安装目录 resources\\app.asar.unpacked\\bin 里的 yt-dlp.exe / ffmpeg.exe），复制进 deskpal 数据目录的 bin 文件夹；也可手动填路径或安装到系统 PATH。</p></div>
     <div class="field"><span class="label">yt-dlp 路径（留空 = 自动：数据目录/bin → 系统 PATH）</span>
@@ -513,13 +573,13 @@ async function renderApi() {
     <p class="hint">没有字幕的视频才需要 ASR（B站/YouTube 大多有自动字幕，可免转写）。智谱 GLM 用户：地址填完整端点 https://open.bigmodel.cn/api/paas/v4/audio/asr、模型填 glm-asr；SiliconFlow 填 https://api.siliconflow.cn/v1（自动补 /audio/transcriptions）+ FunAudioLLM/SenseVoiceSmall。</p>
   </div>
   <div class="set-section">
-    <h3 style="margin-top:0">🤖 Agent 执行（实验功能）</h3>
+    <h3 style="margin-top:0">Agent 执行（实验功能）</h3>
     <p class="hint">在「角色扮演」聊天中执行文件任务：读取 / 列目录 / 写文件。文件权限三档可在聊天窗底部随时切换（此处同步修改）：</p>
     <div class="field"><span class="label">文件权限模式（对下一次任务生效）</span>
       <select id="ag-mode" style="max-width:360px">
-        <option value="read" ${agent.permissionMode === 'read' ? 'selected' : ''}>🔒 只读——只能读取和列目录，不写文件</option>
-        <option value="userData" ${agent.permissionMode === 'userData' ? 'selected' : ''}>📝 可编辑——应用数据目录（deskpal 文件夹）及其子目录内可写</option>
-        <option value="full" ${agent.permissionMode === 'full' ? 'selected' : ''}>⚠️ 完全编辑——本机大部分目录可读写（核心系统目录除外，每次写入需批准）</option>
+        <option value="read" ${agent.permissionMode === 'read' ? 'selected' : ''}>只读——只能读取和列目录，不写文件</option>
+        <option value="userData" ${agent.permissionMode === 'userData' ? 'selected' : ''}>可编辑——应用数据目录（deskpal 文件夹）及其子目录内可写</option>
+        <option value="full" ${agent.permissionMode === 'full' ? 'selected' : ''}>完全编辑——本机大部分目录可读写（核心系统目录除外，每次写入需批准）</option>
       </select></div>
     <div class="field"><span class="label">启用 Agent 文件任务执行</span>
       <label style="display:flex;gap:6px;align-items:center;font-size:13px">
@@ -535,7 +595,7 @@ async function renderApi() {
     <div class="row"><span class="hint" id="ag-saved"></span></div>
   </div>
   <div class="set-section">
-    <h3 style="margin-top:0">🌐 联网搜索（受控出口 + 账本）</h3>
+    <h3 style="margin-top:0">联网搜索（受控出口 + 账本）</h3>
     <p class="hint">角色可联网检索公开信息：用户明确要求的直接执行（首次使用会在聊天中弹授权卡开启）；角色自主补充的检索逐次弹卡批准。每次检索（含被拦截/被拒）都记入账本，聊天窗输入 <b>/search ledger</b> 查看。查询词不得包含个人信息（出口硬拦）。</p>
     <div class="field"><span class="label">联网搜索总开关${ws.enabled ? '（已开启 ● 通常由聊天内授权卡开启，此处可一键关闭）' : '（未开启 —— 聊天中要求查资料时会弹授权卡）'}</span>
       <label style="display:flex;gap:6px;align-items:center;font-size:13px">
@@ -564,6 +624,16 @@ async function renderApi() {
     <div class="field"><span class="label">回避话题表（每行一条；命中即拦截，支持关键词或 /正则/i 写法。用于明确不想让角色碰的话题）</span>
       <textarea id="ws-topics" rows="3" style="max-width:480px" placeholder="每行一条，如：&#10;某敏感词&#10;/某正则/i">${esc(wsTopics)}</textarea></div>
     <p class="hint">密钥经 safeStorage 加密存储，不会进入角色上下文。检索结果不落盘（仅内存冷却缓存）；用户明确要求保存时才经 write_file 权限流写入。</p>
+  </div>
+  <div class="set-section">
+    <h3 style="margin-top:0">视觉感知（桌面查看 / 摄像头）</h3>
+    <p class="hint">角色具备「眼睛」：可截取桌面画面（look_screen）或开启摄像头拍一帧（look_camera）送入视觉上下文（需上方「图像识别」为可用状态）。画面会发送给你配置的模型服务商做识别；摄像头每次使用都先弹授权卡、拍完即关，无「永久开启」。</p>
+    <div class="field"><span class="label">桌面查看总开关${vc.screenEnabled ? '（已开启 ● 通常由聊天内授权卡开启，此处可一键关闭）' : '（未开启 —— 角色被要求看屏幕时会弹授权卡）'}</span>
+      <label style="display:flex;gap:6px;align-items:center;font-size:13px">
+        <input type="checkbox" id="vc-screen-enabled" ${vc.screenEnabled ? 'checked' : ''}>
+        允许角色截取桌面画面识别
+      </label></div>
+    <p class="hint">摄像头不设开关：每次调用都逐次弹卡批准（拒绝后 1 分钟内不再弹卡）。截图/影像均不落盘，仅注入当轮对话上下文。</p>
   </div>`;
 
   // ---- 模型列表自动获取（类似 CC Switch：填好地址 + Key → 拉取 /models → 下拉选择） ----
@@ -608,14 +678,14 @@ async function renderApi() {
       const r = await dp.llmListModels({ endpoint, key });
       modelOptions = r.models || [];
       modelStatus.textContent = modelOptions.length
-        ? `✓ 已获取 ${modelOptions.length} 个模型，点击「模型名」输入框即可从完整列表选择`
+        ? `已获取 ${modelOptions.length} 个模型，点击「模型名」输入框即可从完整列表选择`
         : '接口未返回任何模型，可手动填写模型名';
       modelStatus.style.color = modelOptions.length ? 'var(--dp-ok)' : '';
       if (modelOptions.length) showModelMenu(); // 拉完直接摊开全量列表
     } catch (err) {
       modelOptions = [];
       hideModelMenu();
-      modelStatus.textContent = (quiet ? '' : '✗ ') + `获取模型列表失败：${errText(err)}（仍可手动填写模型名）`;
+      modelStatus.textContent = (quiet ? '' : '失败：') + `获取模型列表失败：${errText(err)}（仍可手动填写模型名）`;
       modelStatus.style.color = '';
     } finally {
       fetchingModels = false;
@@ -634,7 +704,7 @@ async function renderApi() {
       const r = await dp.llmVisionDetect({ model: m });
       if (!m) { visionHint.textContent = '填好模型名后自动检测是否支持图像输入'; visionHint.style.color = ''; return; }
       visionHint.textContent = r.detected
-        ? `✓ 「${m}」识别为多模态模型，保持「自动检测」即可`
+        ? `「${m}」识别为多模态模型，保持「自动检测」即可`
         : `「${m}」未识别为多模态——若该模型确实支持图像输入，请选「强制开启」`;
       visionHint.style.color = r.detected ? 'var(--dp-ok)' : '';
     } catch (_) { visionHint.textContent = ''; }
@@ -685,7 +755,7 @@ async function renderApi() {
     // 保存会触发 renderApi() 重建 DOM，写入前重新取节点
     const el = body.querySelector('#a-test-result');
     if (el) {
-      el.textContent = r.ok ? `✓ 连接成功，延迟 ${r.latencyMs}ms` : `✗ ${r.error}`;
+      el.textContent = r.ok ? `连接成功，延迟 ${r.latencyMs}ms` : `失败：${r.error}`;
       el.style.color = r.ok ? 'var(--dp-ok)' : 'var(--dp-danger)';
     }
   });
@@ -698,8 +768,8 @@ async function renderApi() {
     try {
       const rt = await dp.videoProbe();
       const fmt = (b, name) => b.found
-        ? `✓ ${name}：${b.path}${b.version ? '（' + b.version + '）' : ''}`
-        : `✗ ${name}：未找到（导入、填路径或装到 PATH）`;
+        ? `可用 ${name}：${b.path}${b.version ? '（' + b.version + '）' : ''}`
+        : `不可用 ${name}：未找到（导入、填路径或装到 PATH）`;
       probeEl.innerHTML = `${fmt(rt.ytDlp, 'yt-dlp')}<br>${fmt(rt.ffmpeg, 'ffmpeg')}`;
     } catch (err) { probeEl.textContent = '检测失败：' + errText(err); }
   }
@@ -733,7 +803,7 @@ async function renderApi() {
       });
       const key = body.querySelector('#vid-asr-key').value.trim();
       if (key) await dp.videoSaveAsrKey(key);
-      saved.textContent = '✓ 已保存';
+      saved.textContent = '已保存';
       saved.style.color = 'var(--dp-ok)';
       setTimeout(() => { if (saved) saved.textContent = ''; }, 1800);
       probeVideoTools();
@@ -743,7 +813,7 @@ async function renderApi() {
   // ---- Agent 执行区块（即时保存）----
   const agSaved = body.querySelector('#ag-saved');
   const agFlash = () => {
-    agSaved.textContent = '✓ 已保存';
+    agSaved.textContent = '已保存';
     setTimeout(() => { if (agSaved) agSaved.textContent = ''; }, 1500);
   };
   const agEnabled = body.querySelector('#ag-enabled');
@@ -758,7 +828,7 @@ async function renderApi() {
     permissionMode: agMode.value,
     toolMaxTokens: +agToolTokens.value,
   });
-  const saveAgent = () => dp.storeSet('settings', { agent: agentPatch() }).then(agFlash).catch(err => { agSaved.textContent = '✗ ' + errText(err); });
+  const saveAgent = () => dp.storeSet('settings', { agent: agentPatch() }).then(agFlash).catch(err => { agSaved.textContent = '失败：' + errText(err); });
   agEnabled.addEventListener('change', saveAgent);
   agMode.addEventListener('change', saveAgent);
   for (const r of [agRounds, agTimeout, agToolTokens]) {
@@ -798,19 +868,28 @@ async function renderApi() {
       renderApi();
     } catch (err) { toast(errText(err), 'error'); }
   });
+
+  // ---- 视觉感知区块（即时保存开关；摄像头无开关、恒为逐次授权卡） ----
+  body.querySelector('#vc-screen-enabled')?.addEventListener('change', async (e) => {
+    try {
+      await dp.storeSet('settings', { agent: { visionCapture: { screenEnabled: e.target.checked } } });
+      toast(e.target.checked ? '桌面查看已开启' : '桌面查看已关闭', 'ok');
+      renderApi();
+    } catch (err) { toast(errText(err), 'error'); }
+  });
   body.querySelector('#ws-test').addEventListener('click', async () => {
     wsFlash('测试中…');
     // 先保存当前表单再测试（未保存的 Key 直接可用）
     const src = wsSource.value;
-    if (!src) return wsFlash('✗ 请先选择供应商', false);
+    if (!src) return wsFlash('请先选择供应商', false);
     const key = body.querySelector('#ws-key').value.trim();
     const endpoint = body.querySelector('#ws-endpoint').value.trim();
     let keyForTest = key;
     if (!keyForTest && searchCfg.hasKey && src === searchCfg.source) keyForTest = undefined; // 用已保存的
     try {
       const r = await dp.searchTest({ source: src, endpoint, ...(keyForTest !== undefined ? { key: keyForTest } : {}) });
-      wsFlash(r.ok ? `✓ 连接成功，延迟 ${r.latencyMs}ms，返回 ${r.results} 条` : `✗ ${r.error}`, r.ok);
-    } catch (err) { wsFlash('✗ ' + errText(err), false); }
+      wsFlash(r.ok ? `连接成功，延迟 ${r.latencyMs}ms，返回 ${r.results} 条` : `失败：${r.error}`, r.ok);
+    } catch (err) { wsFlash('失败：' + errText(err), false); }
   });
   const wsDaily = body.querySelector('#ws-daily'), wsCooldown = body.querySelector('#ws-cooldown');
   wsDaily.addEventListener('input', () => wsDaily.closest('.slider-row').querySelector('.val').textContent = wsDaily.value);
@@ -840,10 +919,10 @@ async function renderCommands() {
       <div class="cmd-row" data-i="${i}">
         <input type="text" data-f="phrase" value="${esc(c.phrase || '')}" placeholder="指令词，如：打开微信">
         <div class="row"><input type="text" data-f="path" value="${esc(c.path || '')}" placeholder="文件路径或网址" style="width:100%">
-          <button class="btn btn-sm" data-a="pick" title="浏览">📁</button></div>
+          <button class="btn btn-sm" data-a="pick" title="浏览">${icon('folder', 14)}</button></div>
         <input type="text" data-f="args" value="${esc(c.args || '')}" placeholder="参数（可空）">
-        <span class="small ${c.missing ? '' : 'muted'}" style="width:90px">${c.missing ? '⚠️ 路径失效' : extOf(c.path)}</span>
-        <div class="row"><button class="btn btn-sm" data-a="run">▶ 试运行</button><button class="btn btn-sm btn-icon" data-a="del" title="删除">🗑</button></div>
+        <span class="small ${c.missing ? '' : 'muted'}" style="width:90px">${c.missing ? '路径失效' : extOf(c.path)}</span>
+        <div class="row"><button class="btn btn-sm" data-a="run">${icon('play', 12)} 试运行</button><button class="btn btn-sm btn-icon" data-a="del" title="删除">${icon('trash', 15)}</button></div>
       </div>`).join('') || '<div class="hint" style="padding:4px 0">还没有指令。点「＋ 添加指令」创建第一条吧～</div>';
   }
 
@@ -938,7 +1017,7 @@ async function renderCategories() {
         <div class="rule-row" data-i="${i}">
           <input type="text" data-f="regex" value="${esc(r.regex)}" placeholder="正则，如 (微信|wechat)">
           <select data-f="category">${cfg.categories.map(c => `<option ${r.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
-          <button class="btn btn-sm btn-icon" data-a="del">🗑</button>
+          <button class="btn btn-sm btn-icon" data-a="del" title="删除">${icon('trash', 15)}</button>
         </div>`).join('') || '<div class="hint">暂无自定义规则</div>'}
     </div>
     <div class="row" style="margin:8px 0 16px"><button class="btn btn-sm" id="rule-add">＋ 添加规则</button><span class="grow"></span><button class="btn btn-sm btn-primary" id="rule-save">保存规则</button></div>
@@ -1027,17 +1106,17 @@ async function renderAbout() {
       <div class="row" style="justify-content:space-between"><span>版本</span><b>v${esc(info.version)}</b></div>
       <div class="row" style="justify-content:space-between;margin-top:6px"><span>数据目录</span></div>
       <div class="hint" style="user-select:text">${esc(info.dataDir)}</div>
-      <button class="btn btn-sm" id="open-data" style="margin-top:10px">📂 打开数据目录</button>
+      <button class="btn btn-sm" id="open-data" style="margin-top:10px">${icon('folder', 14)} 打开数据目录</button>
     </div>
     <h4>功能速览</h4>
     <ul class="hint" style="line-height:2">
-      <li>💬 <b>角色扮演</b>：双击宠物开聊；回复附带的情绪会实时驱动表情</li>
-      <li>⚡ <b>快问速答</b>：聊天窗第二标签，直接了当的问答</li>
-      <li>📖 <b>书籍陪读</b>：上传 txt/pdf/doc/docx，生成剧情陪读，随时举手提问</li>
+      <li>${icon('message', 14)} <b>角色扮演</b>：双击宠物开聊；回复附带的情绪会实时驱动表情</li>
+      <li>${icon('bolt', 14)} <b>快问速答</b>：聊天窗第二标签，直接了当的问答</li>
+      <li>${icon('book', 14)} <b>书籍陪读</b>：上传 txt/pdf/doc/docx，生成剧情陪读，随时举手提问</li>
       <li>⏱ <b>时间管理</b>：后台记录应用使用；空闲回来会请你标注陌生应用；可生成 AI 报告</li>
-      <li>🚀 <b>启动器</b>：「打开xx」本地秒开，在指令页配置</li>
-      <li>📅 <b>日程提醒</b>：一句话或 Excel 项目表 → 自动提醒（气泡 + 系统通知）</li>
-      <li>🔒 <b>权限</b>：只读非敏感文件；写入仅限本应用数据目录</li>
+      <li>${icon('terminal', 14)} <b>启动器</b>：「打开xx」本地秒开，在指令页配置</li>
+      <li>${icon('calendar', 14)} <b>日程提醒</b>：一句话或 Excel 项目表 → 自动提醒（气泡 + 系统通知）</li>
+      <li>${icon('lock', 14)} <b>权限</b>：只读非敏感文件；写入仅限本应用数据目录</li>
     </ul>
   </div>`;
   body.querySelector('#open-data').addEventListener('click', () => dp.openPath(info.dataDir));
@@ -1048,10 +1127,13 @@ async function renderAbout() {
   await initTheme();
   let initialTab = 'persona';
   // 其他窗口可指定打开的标签（settings:changed {tab})
-  dp.on('settings:changed', ({ tab }) => { if (tab && TABS.some(([k]) => k === tab)) switchTab(tab); });
+  dp.on('settings:changed', ({ tab }) => {
+    const keys = TAB_GROUPS.flatMap(([, items]) => items.map(([k]) => k));
+    if (tab && keys.includes(tab)) switchTab(tab);
+  });
   // 宪法篡改事故推送（risk note R3）：主进程弹窗之外，设置页常驻刷新告警
   dp.on('canon:incident', (incident) => {
-    toast(`⚠ 人格宪法锁层告警：${(incident && incident.note) || 'canon 与封存不一致，已自动恢复'}`, 'error');
+    toast(`人格宪法锁层告警：${(incident && incident.note) || 'canon 与封存不一致，已自动恢复'}`, 'error');
     if (root.querySelector('.nav-item.active')?.dataset.tab === 'persona') renderPersona();
   });
   switchTab(initialTab);

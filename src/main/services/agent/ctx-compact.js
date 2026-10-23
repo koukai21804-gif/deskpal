@@ -73,13 +73,15 @@ function compactTurns(turns, { budget, watermark = turns.length, isReceipt, mark
       n++;
     } else if (isImageUserMsg(m) && !isReceipt(m)) {
       // 图像压缩：整条换成机械回执（图不能摘要，也不该留低分辨率残影占预算——
-      // 模型需要时重新调用 read_image 是无损路径）。多图合一条消息时一并移除、回执报张数与路径。
+      // 模型需要时重新调用是无损路径）。多图合一条消息时一并移除、回执报张数与路径。
+      // read_image / look_screen / look_camera 同一通道，工具名从元数据取。
       const meta = (metaOf && metaOf(m)) || {};
+      const visTool = meta.tool || 'read_image';
       const before = imageTokensOf(meta);
       const cnt = Array.isArray(meta.images) ? meta.images.length : 1;
       const paths = (Array.isArray(meta.images) ? meta.images.map(x => x.path) : [meta.path])
         .filter(Boolean).slice(0, 3).join('、');
-      m.content = `[已压缩] read_image 的图像（共 ${cnt} 张${paths ? '：' + paths : ''}）已从上下文移除——该图像此前已真实读取过；需要再看图时重新调用 read_image`;
+      m.content = `[已压缩] ${visTool} 的图像（共 ${cnt} 张${paths ? '：' + paths : ''}）已从上下文移除——该图像此前已真实读取过；需要再看时重新调用 ${visTool}`;
       if (markReceipt) markReceipt(m);
       total += tokenEstimate(m.content) - before;
       n++;

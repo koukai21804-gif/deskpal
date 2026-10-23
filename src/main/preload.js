@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 // 主→渲染推送通道白名单
 const PUSH_CHANNELS = [
-  'theme:changed', 'settings:changed', 'sprites:changed',
+  'theme:changed', 'settings:changed', 'sprites:changed', 'avatar:changed',
   'pet:emotion', 'pet:bubble', 'pet:sleep', 'pet:ding', 'pet:say',
   'llm:chunk', 'llm:done', 'llm:error',
   'agent:step', 'agent:permission', 'agent:artifact', 'agent:done',
@@ -133,6 +133,11 @@ contextBridge.exposeInMainWorld('deskpal', {
   launcherRun: (id) => invoke('launcher:run', { id }),
   launcherList: () => invoke('launcher:list', {}),
   launcherSave: (commands) => invoke('launcher:save', { commands }),
+
+  // 对话对象头像（设置→人设→对话对象）
+  avatarGet: () => invoke('avatar:get', {}),
+  avatarPickUser: () => invoke('avatar:pick-user', {}),
+  avatarResetUser: () => invoke('avatar:reset-user', {}),
 
   // 形象
   spritesGet: () => invoke('sprites:get', {}),
