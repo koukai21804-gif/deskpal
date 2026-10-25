@@ -16,6 +16,8 @@ const SEARCH_CMD_RE = /^\s*\/\s*search\s+ledger\s*$/i;
 const DISCIPLINE_CMD_RE = /^\s*\/\s*discipline\s*$/i;
 // 斜杠命令：token 看板面板（/tokens 或 /token；角色无感知，不入史不进 LLM）
 const TOKEN_CMD_RE = /^\s*\/\s*tokens?\s*$/i;
+// 斜杠命令：演示模式 /demo 族（进入/off/status/speed；状态权威在主进程，不入史不进 LLM）
+const DEMO_CMD_RE = /^\s*\/\s*demo\b/i;
 
 let tab = 'roleplay';
 let streaming = null;           // { tab, el, raw, steps, changes, permTimers, sessionId }
@@ -23,6 +25,8 @@ let histories = { roleplay: [], quick: [] };
 let sessionInfo = { activeSessionId: '', sessions: [] }; // v0.5 多会话（仅 roleplay）
 let spriteSlots = {};           // 表情差分图槽位（空态角色用；boot 时取一次）
 let avatarState = { user: null }; // 对话对象头像（设置→人设→对话对象上传）
+// 演示模式（v0.6.2，会话级）：主进程是权威，这里只存副本供打字机/徽标用
+let demoState = { on: false, rounds: 0, speed: 300, sessionId: '' };
 
 const app = document.getElementById('app');
 
@@ -40,6 +44,7 @@ topbar.innerHTML = `
     <span class="ss-count" id="sessionCount"></span>
     ${icon('chevronD', 14)}
   </button>
+  <span class="tb-demo" id="demoBadge" hidden title="演示模式进行中：主动推进 / 术语必附短解 / 回复提速 / 打字机显示。/demo off 退出，/demo status 看状态"></span>
   <span class="tb-spacer"></span>
   <div class="tb-actions">
     <button class="win-btn" id="norekiMailBtn" title="NOREKI-Mail 信箱：克莉奥（clio@hermes）的来信。点按查看——信文将进入对话，缇托即可读信回应">${icon('mail', 16)}<span id="norekiMailBadge" class="mail-badge" style="display:none">0</span></button>
@@ -166,7 +171,70 @@ async function refreshSessions() {
 async function reloadRoleplay() {
   histories.roleplay = await dp.chatHistory('roleplay');
   await refreshSessions();
+  await refreshDemoState();
   renderAll();
+}
+
+// ---------- 演示模式（v0.6.2）：/demo 命令 + 徽标 + 打字机显示 ----------
+function renderDemoBadge() {
+  const b = topbar.querySelector('#demoBadge');
+  if (!b) return;
+  if (demoState.on) {
+    b.hidden = false;
+    b.textContent = `演示中 · ${demoState.rounds} 轮 · ${demoState.speed} 字/分`;
+  } else {
+    b.hidden = true;
+  }
+}
+async function refreshDemoState() {
+  try { demoState = await dp.demoState(); } catch (_) { return; }
+  renderDemoBadge();
+}
+// 主进程执行命令 → 回执落本地状态；开/关切换时主进程已落「系统事件」入史，这里刷新历史
+async function applyDemoResult(r) {
+  if (r && r.state) demoState = r.state;
+  renderDemoBadge();
+  if (r && r.message) toast(r.message, r.ok === false ? 'error' : 'ok', 4200);
+  if (r && r.changed && r.transition) await reloadRoleplay().catch(() => {});
+}
+async function runDemoCommand(text) {
+  input.value = ''; autoGrow();
+  try { await applyDemoResult(await dp.demoCommand(text)); }
+  catch (err) { toast(errText(err), 'error'); }
+}
+
+// 打字机：演示模式的回复不再流式弹出——正文收齐（llm:done）后按 每分钟字数 逐字显示。
+// 任何 renderAll（新消息/切标签/切会话）都会打断并把全文立即落定；速率按挂钟时间推进
+// （tab 间隔不均匀也不影响总时长），每 tick 重渲染 markdown 保证中途排版正确。
+let typer = null; // { timer, finish }
+function stopTyper(runFinish = true) {
+  if (!typer) return;
+  clearTimeout(typer.timer);
+  const fin = typer.finish;
+  typer = null;
+  if (runFinish && fin) fin();
+}
+function startTyper(el, text, onDone) {
+  stopTyper(false);
+  const body = el.querySelector('.body');
+  if (!body) { onDone(); return; }
+  const rate = Math.max(1, demoState.speed || 300) / 60000; // 字/毫秒
+  let pos = 0, shown = -1, last = performance.now();
+  const finish = () => { typer = null; onDone(); };
+  const step = () => {
+    const now = performance.now();
+    pos = Math.min(text.length, pos + (now - last) * rate);
+    last = now;
+    const n = Math.floor(pos);
+    if (n !== shown) {
+      shown = n;
+      body.innerHTML = renderMD(text.slice(0, n)) + (n < text.length ? '<span class="streaming-cursor"></span>' : '');
+      scrollBottom();
+    }
+    if (n >= text.length) finish();
+    else if (typer) typer.timer = setTimeout(step, 40);
+  };
+  typer = { timer: setTimeout(step, 40), finish: onDone };
 }
 
 let sessionMenuEl = null;
@@ -310,6 +378,14 @@ function fmtClock(at) {
 
 function msgEl(m, group = 'solo') {
   const el = document.createElement('div');
+  // 演示模式开/关的系统事件注入（主进程 pushDemoNote）：按居中系统提示条渲染（角色无头像）
+  if (m.demoNote) {
+    el.className = 'msg system-notice';
+    el.dataset.id = m.id;
+    el.dataset.group = group;
+    el.innerHTML = `<div class="bubble">${icon(m.demoNote === 'off' ? 'xCircle' : 'play', 12)} ${esc(m.content)}</div>`;
+    return el;
+  }
   const kind = m.role === 'user' ? 'user' : m.role === 'system' ? 'system-notice' : m.error ? 'error' : 'assistant';
   // 戏外工作轮（/order 打标）消息 highlight（用户决策 2026-09-29）：真话边界整轮标亮
   el.className = 'msg ' + kind + (m.work ? ' work' : '') + (m.mailInject ? ' noreki-mail' : '');
@@ -594,13 +670,14 @@ const GROUP_GAP_MS = 5 * 60 * 1000;
 function groupOf(hist, i) {
   const m = hist[i], p = hist[i - 1], n = hist[i + 1];
   const same = (a, b) => a && b && a.role === b.role && !a.error && !b.error
-    && a.role !== 'system' && !a.mailInject && !b.mailInject
+    && a.role !== 'system' && !a.mailInject && !b.mailInject && !a.demoNote && !b.demoNote
     && Math.abs(new Date(b.at || 0) - new Date(a.at || 0)) < GROUP_GAP_MS;
   const up = same(p, m), down = same(m, n);
   return up && down ? 'mid' : up ? 'end' : down ? 'start' : 'solo';
 }
 
 function renderAll() {
+  stopTyper(false); // 外部重渲染会拆掉打字中的气泡——先停动画，完整正文由历史渲染补上
   list.innerHTML = '';
   const hist = histories[tab];
   if (!hist.length) {
@@ -653,6 +730,7 @@ async function send(text) {
     if (TOKEN_CMD_RE.test(text)) {
       input.value = ''; autoGrow(); openTokenBoard(); return;
     }
+    if (DEMO_CMD_RE.test(text)) { runDemoCommand(text); return; }
   }
 
   // 1. 本地启动器匹配（零 API）
@@ -696,7 +774,7 @@ async function send(text) {
   try {
     const res = await dp.chatSend(tab, text);
     // 主进程兜底命中斜杠命令（渲染层正则失效时）：撤销本地用户消息与流式气泡，按命令类型接管
-    if (res && (res.memoryCommand || res.profileCommand || res.ledgerCommand || res.disciplineCommand || res.tokenBoardCommand)) {
+    if (res && (res.memoryCommand || res.profileCommand || res.ledgerCommand || res.disciplineCommand || res.tokenBoardCommand || res.demoCommand)) {
       streaming = null;
       setStreamUI(false);
       el.remove();
@@ -704,6 +782,7 @@ async function send(text) {
       if (ui >= 0) { histories[tab].splice(ui, 1); renderAll(); }
       if (res.disciplineCommand) openDisciplineModal();
       if (res.tokenBoardCommand) openTokenBoard();
+      if (res.demoCommand) applyDemoResult(res.demo);
       return;
     }
     if (res.work) userMsg.work = true; // 主进程通道判定回填，renderAll 时用户气泡带「戏外」标
@@ -723,9 +802,12 @@ dp.on('llm:chunk', ({ tab: t, reqId, delta, beat }) => {
   if (!streaming || streaming.tab !== t) return;
   if (reqId && streaming.reqId && reqId !== streaming.reqId) return;
   if (delta) streaming.raw += delta;
-  const body = streaming.el.querySelector('.body');
-  body.innerHTML = renderMD(streaming.raw) + '<span class="streaming-cursor"></span>';
-  scrollBottom();
+  // 演示模式：正文不随流弹出（收齐后由打字机逐字显示）；节拍照常触发宠物表情
+  if (!(demoState.on && t === 'roleplay')) {
+    const body = streaming.el.querySelector('.body');
+    body.innerHTML = renderMD(streaming.raw) + '<span class="streaming-cursor"></span>';
+    scrollBottom();
+  }
   // 节拍：该句正文已显示完成，触发宠物表情（roleplay 持续保持；quick 6s 回落）
   if (beat) dp.petEmote(beat, 'chat', t === 'roleplay' ? 0 : 6000);
 });
@@ -756,17 +838,28 @@ dp.on('llm:done', async ({ tab: t, reqId, clean, emotion, schedule, aborted, bea
     usage: usage || undefined,
   };
   histories[t].push(msg);
-  renderAll();
-  // 保存由主进程负责（历史权威在主进程）；刷新本地副本并回填主进程不存的附加数据（时间线/diff/中断半截）
-  try {
-    const fresh = await dp.chatHistory(t);
-    const extras = new Map(histories[t].filter(m => m.id && (m.steps || m.changes || m.aborted)).map(m => [m.id, m]));
-    histories[t] = fresh.map(m => (extras.has(m.id) ? { ...m, ...extras.get(m.id), content: m.content } : m));
-    // 主进程未保存的消息（停止半截）保留在末尾——agent 中止时 diff 卡与时间线不丢
-    const preserved = msg && !fresh.some(m => m.id === msg.id) && (msg.aborted || msg.steps || msg.changes) ? [msg] : [];
-    histories[t] = [...histories[t], ...preserved];
+  // 演示模式：正文收齐后不立即落定——在原气泡里按打字机逐字显示，播完再做常规
+  // 刷新+重渲染（中途任何 renderAll 会打断并直接显示全文）。停止/出错半截不走打字机。
+  const demoType = demoState.on && t === 'roleplay' && !aborted && typeof clean === 'string' && clean.trim();
+  const settle = async () => {
     renderAll();
-  } catch (_) {}
+    // 保存由主进程负责（历史权威在主进程）；刷新本地副本并回填主进程不存的附加数据（时间线/diff/中断半截）
+    try {
+      const fresh = await dp.chatHistory(t);
+      const extras = new Map(histories[t].filter(m => m.id && (m.steps || m.changes || m.aborted)).map(m => [m.id, m]));
+      histories[t] = fresh.map(m => (extras.has(m.id) ? { ...m, ...extras.get(m.id), content: m.content } : m));
+      // 主进程未保存的消息（停止半截）保留在末尾——agent 中止时 diff 卡与时间线不丢
+      const preserved = msg && !fresh.some(m => m.id === msg.id) && (msg.aborted || msg.steps || msg.changes) ? [msg] : [];
+      histories[t] = [...histories[t], ...preserved];
+      renderAll();
+    } catch (_) {}
+  };
+  if (demoType) {
+    refreshDemoState(); // 轮次在主进程 send 时已 +1，取回最新数刷新徽标
+    startTyper(el, raw, settle);
+    return;
+  }
+  await settle();
 });
 
 dp.on('llm:error', ({ tab: t, error }) => {
@@ -867,6 +960,7 @@ async function openMemoryManager() {
           <div class="mem-item">
             <div class="mem-main">
               <span class="mem-type t-${esc(it.type)}">${MEM_TYPE_LABEL[it.type] || esc(it.type)}</span>
+              ${it.demo ? '<span class="badge a" title="该条来自演示模式对话（demo 来源标记）">demo</span>' : ''}
               <select class="mem-scope-sel" data-id="${esc(it.id)}" title="记忆层级">${Object.entries(MEM_SCOPE_LABEL).map(([v, l]) => `<option value="${v}" ${it.scope === v ? 'selected' : ''}>${l.split('·')[0]}</option>`).join('')}</select>
               <span class="mem-imp" title="重要性 ${it.importance}/5">${Math.max(1, Math.min(5, it.importance || 1))}/5</span>
               <span class="mem-content" title="${esc(it.content)}">${esc(it.content)}</span>
@@ -1503,6 +1597,7 @@ async function doClear() {
   } catch (_) { spriteSlots = {}; }
   try { avatarState = (await dp.avatarGet()) || { user: null }; } catch (_) { avatarState = { user: null }; }
   await refreshSessions();
+  await refreshDemoState(); // 演示模式徽标（重启后恒为关；速度设置从主进程带出）
   refreshMailBadge(); // v1.5：信箱未读徽标
   histories.roleplay = await dp.chatHistory('roleplay');
   histories.quick = await dp.chatHistory('quick');

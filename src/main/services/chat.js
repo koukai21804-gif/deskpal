@@ -19,6 +19,7 @@ const searchLedger = require('./agent/search-ledger');
 const hindsight = require('./hindsight-bridge');
 const sessions = require('./sessions');
 const memory = require('./memory');
+const demoMode = require('./demo-mode');
 
 const HISTORY_KEY = { roleplay: 'chats/roleplay', quick: 'chats/quick' };
 const MAX_KEEP = 200, CTX_MSGS = 20, CTX_TOKENS = 6400;
@@ -162,8 +163,10 @@ const ctxEst = createAnchoredEstimator();
 // 组装请求上下文：system + 最近 CTX_MSGS 条（token 超限再砍半）。
 // agentRun 报告分级上限（G-1）：窗口内最新一份 2000、更早的 500。
 // opts.work：戏外工作轮 → 历史窗收窄到 CTX_MSGS_WORK（见常量注释）。
+// opts.demo：演示模式状态块（roleplay 专属；on 时拼在 system 最末，见 prompts.demoBlock）
 function buildMessages(tab, history, opts = {}) {
-  const system = tab === 'quick' ? prompts.quickSystem() : prompts.roleplaySystem({ hindsight: opts.hindsight });
+  const demo = tab === 'roleplay' ? (opts.demo !== undefined ? opts.demo : demoMode.blockFor()) : null;
+  const system = tab === 'quick' ? prompts.quickSystem() : prompts.roleplaySystem({ hindsight: opts.hindsight, demo });
   const winSize = opts.work && tab === 'roleplay' ? CTX_MSGS_WORK : CTX_MSGS;
   const win = history.slice(-winSize);
   const lastAgentIdx = win.reduce((a, m, i) => (m.agentRun ? i : a), -1);
@@ -188,6 +191,7 @@ function sendToWin(payload) {
 // 渲染层用它保持本地消息附加数据（时间线/diff 卡）在历史刷新后不丢。
 // meta.agentRun：agent 任务轮的回复打标（戏内记忆据此做摘要化隔离，见 forContext）
 // meta.work：戏外工作轮（/order 打标）——消息带 work 标，渲染层 highlight（用户决策 2026-09-29）
+// meta.demo：演示模式轮——消息带 demo 标（记忆提取据此给条目打 demo 来源标记，事后审计用）
 async function finalizeReply(tab, fl, meta = {}) {
   const h = getHistory(tab);
   const msgId = 'm' + Date.now().toString(36);
@@ -198,6 +202,7 @@ async function finalizeReply(tab, fl, meta = {}) {
     schedule: fl.schedule || undefined,
     agentRun: meta.agentRun || undefined,
     work: meta.work || undefined,
+    demo: meta.demo || undefined,
     usage: meta.usage || undefined, // 本轮 API 消耗（输入/思考/回复分项；供应商未报则缺省）
     at: dayjs().format(),
   });
@@ -213,30 +218,34 @@ async function send(tab, text) {
   // 戏内/戏外通道（loop.channelOf）：/order、/指令：、/命令： 行首打标 = 戏外工作轮，消息打 work 标
   // 供渲染层 highlight；仅 roleplay 有 agent 管线，quick 恒为戏内
   const work = tab === 'roleplay' && loop.channelOf(text) === 'work';
+  // 演示模式（v0.6.2，会话级）：轮次在组装上下文前 +1——状态块的「已持续 N 轮」与本轮对齐；
+  // 用户/回复消息带 demo 标，记忆提取据此给条目打 demo 来源标记
+  const sessionId = tab === 'roleplay' ? sessions.active().id : undefined;
+  const demoOn = tab === 'roleplay' && demoMode.isOn(sessionId);
+  if (demoOn) demoMode.bumpRound(sessionId);
   const history = getHistory(tab);
-  history.push({ id: 'm' + Date.now().toString(36), role: 'user', content: String(text), work: work || undefined, at: dayjs().format() });
+  history.push({ id: 'm' + Date.now().toString(36), role: 'user', content: String(text), work: work || undefined, demo: demoOn || undefined, at: dayjs().format() });
   saveHistory(tab, history);
 
   // Hindsight 语义召回预取（M3）：对最新用户消息异步取回随本轮 system 注入；
   // 1.2s 超时全失败静默（[]），绝不阻塞主链；仅 roleplay（速问为工具性短答，不背语义记忆税）
   let hindsightRecalls = [];
   if (tab === 'roleplay') { try { hindsightRecalls = await hindsight.recall(String(text)); } catch (_) {} }
-  const messages = buildMessages(tab, history, { work, hindsight: hindsightRecalls });
+  const messages = buildMessages(tab, history, { work, hindsight: hindsightRecalls, demo: demoOn ? demoMode.blockFor(sessionId) : null });
   // 锚点候选：本次请求覆盖的末条历史消息 id（成功后上游 prompt_tokens 落锚于此，P0-2）
   const anchorKey = history[history.length - 1].id;
-  const sessionId = tab === 'roleplay' ? sessions.active().id : undefined;
   sendToWin({ event: 'llm:chunk', data: { tab, reqId, delta: '', sessionId } }); // 占位开始信号
 
   // roleplay 且 agent 开启 → 工具执行管线；否则普通流式（流式在后台执行，立即返回 reqId 供渲染层停止）
   const agentOn = tab === 'roleplay' && !!(store.get('settings').agent || {}).enabled;
-  if (agentOn) runAgentTurn(tab, reqId, String(text), messages, work, anchorKey, sessionId);
-  else plainTurn(tab, reqId, messages, anchorKey, false, sessionId);
+  if (agentOn) runAgentTurn(tab, reqId, String(text), messages, work, anchorKey, sessionId, demoOn);
+  else plainTurn(tab, reqId, messages, anchorKey, false, sessionId, demoOn);
 
   return { reqId, work, sessionId };
 }
 
 // 普通流式轮（quick / agent 关闭时的 roleplay）；overflowTried：溢出压缩重试标记（P0-4）
-function plainTurn(tab, reqId, messages, anchorKey, overflowTried = false, sessionId = undefined) {
+function plainTurn(tab, reqId, messages, anchorKey, overflowTried = false, sessionId = undefined, demoOn = false) {
   const pipeline = makeStreamPipeline(tab, reqId);
   const turnMeter = createUsageMeter(); // 本轮 API 消耗（外显）
   (async () => {
@@ -258,7 +267,7 @@ function plainTurn(tab, reqId, messages, anchorKey, overflowTried = false, sessi
       });
       const fl = pipeline.flush();
       const usage = turnMeter.snapshot();
-      const { msgId } = await finalizeReply(tab, fl, { usage });
+      const { msgId } = await finalizeReply(tab, fl, { usage, demo: demoOn || undefined });
       sendToWin({ event: 'llm:done', data: { tab, reqId, clean: fl.clean, emotion: fl.emotion, beats: fl.beats, schedule: fl.schedule, aborted: false, msgId, usage, sessionId } });
       if (tab === 'roleplay') {
         memoryTick().catch(e => logger.warn('记忆提取失败: ' + e.message));
@@ -280,7 +289,7 @@ function plainTurn(tab, reqId, messages, anchorKey, overflowTried = false, sessi
           messages[messages.length - 1],
         ];
         logger.warn('[chat] 上下文溢出，压缩历史后重试一次');
-        plainTurn(tab, reqId, compact, null, true, sessionId);
+        plainTurn(tab, reqId, compact, null, true, sessionId, demoOn);
         return;
       }
       logger.error(e);
@@ -290,7 +299,7 @@ function plainTurn(tab, reqId, messages, anchorKey, overflowTried = false, sessi
 }
 
 // Agent 执行轮（F9）：loop 负责 tool-call 循环/权限/差分归因/台账，这里只管聊天域收尾
-function runAgentTurn(tab, reqId, instruction, baseMessages, work, anchorKey, sessionId = undefined) {
+function runAgentTurn(tab, reqId, instruction, baseMessages, work, anchorKey, sessionId = undefined, demoOn = false) {
   const turnMeter = createUsageMeter(); // 本轮 API 消耗（外显；与锚点口径分离——锚点只认首个基础轮）
   loop.startRun({
     reqId, instruction, baseMessages,
@@ -299,7 +308,7 @@ function runAgentTurn(tab, reqId, instruction, baseMessages, work, anchorKey, se
     onUsage: (u) => { if (u && Number.isFinite(+u.prompt_tokens)) ctxEst.setAnchor({ key: anchorKey, promptTokens: u.prompt_tokens }); },
     // 溢出压缩前固化记忆（P0-4）：值得长期保留的对话信息先进记忆库再丢历史
     onContextOverflow: async () => { await flushMemory(); },
-    onFinal: (fl, x) => finalizeReply(tab, fl, { agentRun: true, work, usage: x && x.usage }),
+    onFinal: (fl, x) => finalizeReply(tab, fl, { agentRun: true, work, demo: demoOn || undefined, usage: x && x.usage }),
     onDone: (p) => {
       sendToWin({
         event: 'llm:done',
@@ -346,7 +355,12 @@ async function memoryTick(force = false) {
 // ③落库统一走 memory.mergeExtracted（补 id/截断标记/淘汰归档都在那一侧）。
 async function runExtract(sess, since) {
   const msgs = sess.messages || [];
+  // 演示来源标记（v0.6.2）：本次提取窗口内（上次提取之后）有 demo 标消息 → 落库条目带
+  // demo:true（事后审计「哪些认知来自演示对话」）。系统事件注入（demoNote）不算对话内容。
+  const lastAt = String(sess.lastExtractAt || '');
+  const demoWindow = msgs.some(m => m.demo && m.role !== 'system' && (!lastAt || String(m.at || '') > lastAt));
   const recent = msgs.slice(-20)
+    .filter(m => !m.demoNote)
     .map(m => `${m.role === 'user' ? '用户' : 'AI'}: ${prompts.stripHarnessNotes(m.content)}`)
     .join('\n');
   const memDoc = store.get('memory/roleplay');
@@ -388,7 +402,7 @@ async function runExtract(sess, since) {
     }
   }
 
-  memory.mergeExtracted(extracted);
+  memory.mergeExtracted(extracted, { demo: demoWindow });
   // Hindsight 双写（M3）：提取结果写入语义库（attribution=user，A 档——内容源自用户对话陈述）。
   // core 目标条目结构性跳过（评审 §6.2 物理隔离：身份级内容绝不入语义库，合并进 core 的文本不 retain）
   try {
@@ -434,6 +448,25 @@ function bumpUserCount(tab) {
   sess.userCountSince = (sess.userCountSince || 0) + 1;
   sessions.persist(doc);
   userProfile.bump(); // 开发版：身份档案漂移计数（只认 roleplay）
+}
+
+// 演示模式开/关的系统事件入史（v0.6.2）。role=user + demoNote 标：随历史自然进入
+// 角色上下文（下轮 buildMessages 可见），渲染层画成系统提示条。为什么必须入史——
+// 规格要求关闭后状态块「完全移除、不得残留」，若没有任何信号，模型只能凭历史里
+// 「我在演示模式」的旧对话推断，会答错「你现在处于什么模式」；off 注是它唯一能
+// 看到的状态变化证据。不 bump 计数（不是用户说的话，不触发记忆提取/档案漂移）。
+function pushDemoNote(kind) {
+  const h = getHistory('roleplay');
+  h.push({
+    id: 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+    role: 'user',
+    content: kind === 'off'
+      ? '[系统事件：演示模式已退出，本会话恢复普通模式]'
+      : '[系统事件：演示模式已开启]',
+    demoNote: kind,
+    at: dayjs().format(),
+  });
+  saveHistory('roleplay', h);
 }
 
 // NOREKI-Mail 查看来信（v1.5）：前辈点「查看信件」→ 未读信文以系统注入消息入史。
@@ -486,6 +519,6 @@ async function exportChat(tab) {
 
 module.exports = {
   send, stop: llm.stop, getHistory, saveHistory, bumpUserCount, exportChat, buildMessages,
-  memoryTick, flushMemory, deliverMailToHistory, mailboxStatus,
+  memoryTick, flushMemory, deliverMailToHistory, mailboxStatus, pushDemoNote,
   listSessions, newSession, switchSession, renameSession, deleteSession,
 };

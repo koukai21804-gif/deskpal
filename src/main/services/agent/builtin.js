@@ -180,7 +180,10 @@ tools.register({
   permission: 'read',
   enabled: true,
   handler: async (args) => {
-    const item = memory.addMemory({ content: args.content, importance: args.importance, type: args.type, scope: args.scope, ttlDays: args.ttlDays });
+    // 演示模式轮的写入带 demo 来源标记（v0.6.2，事后审计用）——save_memory 只发生在
+    // 进行中的轮次里，写入时的演示状态即该轮状态
+    const demoMode = require('../demo-mode');
+    const item = memory.addMemory({ content: args.content, importance: args.importance, type: args.type, scope: args.scope, ttlDays: args.ttlDays }, { demo: demoMode.isOn() });
     // Hindsight 双写（M3）：core 条目结构性跳过（评审 §6.2 物理隔离）
     if (item.scope !== 'core') {
       hindsight.retain([{ content: item.content, context: 'deskpal-save-memory', metadata: { type: item.type, importance: String(item.importance) } }], { source: 'deskpal-save-memory' }).catch(() => {});

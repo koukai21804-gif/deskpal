@@ -104,7 +104,8 @@ function normalize(s) { return String(s || '').replace(/\s+/g, ''); }
 // 新增（save_memory 工具 / 面板 / 兜底共用）：
 //   · 与现有条目逐字同文 → 合并（更新内容与 createdAt，不另开条目）
 //   · core 写入超字数预算 → 降级 working，回执注明
-function addMemory({ type, content, importance, scope, ttlDays } = {}) {
+//   · opts.demo=true（演示模式轮写入）→ 条目带 demo:true 来源标记，便于事后审计
+function addMemory({ type, content, importance, scope, ttlDays } = {}, opts = {}) {
   const text = String(content || '').trim();
   if (!text) throw new Error('记忆内容不能为空');
   const list = ensureIds();
@@ -115,6 +116,7 @@ function addMemory({ type, content, importance, scope, ttlDays } = {}) {
     dup.content = capText(text, 60);
     dup.type = TYPES.includes(type) ? type : dup.type;
     if (Number.isFinite(+importance)) dup.importance = Math.min(5, Math.max(1, Math.round(+importance)));
+    if (opts.demo) dup.demo = true;
     dup.createdAt = now; // 合并视为该认知被再次确认，时间戳刷新（影响 working 注入顺位）
     sweep();
     return { ...dup, merged: true };
@@ -133,6 +135,7 @@ function addMemory({ type, content, importance, scope, ttlDays } = {}) {
     scope: sc,
     createdAt: now,
     ...(sc === 'ephemeral' ? { ttlDays: Math.min(90, Math.max(1, Math.round(+ttlDays) || EPHEMERAL_TTL_DAYS)) } : {}),
+    ...(opts.demo ? { demo: true } : {}),
   };
   if (note) item.note = note;
   list.push(item);
@@ -144,7 +147,8 @@ function addMemory({ type, content, importance, scope, ttlDays } = {}) {
 //   · mergeInto 命中现有 id → 原位合并（content 换成合并后的完整描述，createdAt 刷新）
 //   · mergeInto 指向 core 条目 → 拒绝合并、按新 working 条目落库（自动提取禁止写 core）
 //   · 其余按新条目落库，scope 强制 working（自动提取是漂移源，core 只收显式写入）
-function mergeExtracted(extracted) {
+//   · opts.demo=true（提取窗口内有演示模式消息）→ 新条目与被合并条目均带 demo 来源标记
+function mergeExtracted(extracted, opts = {}) {
   const list = ensureIds();
   const now = new Date().toISOString();
   let added = 0, merged = 0;
@@ -157,6 +161,7 @@ function mergeExtracted(extracted) {
         target.content = text;
         target.type = TYPES.includes(x.type) ? x.type : target.type;
         target.createdAt = now;
+        if (opts.demo) target.demo = true;
         merged++;
         continue;
       }
@@ -169,6 +174,7 @@ function mergeExtracted(extracted) {
       importance: Math.min(5, Math.max(1, Math.round(+x.importance) || 2)),
       scope: 'working',
       createdAt: now,
+      ...(opts.demo ? { demo: true } : {}),
     };
     list.push(item);
     added++;

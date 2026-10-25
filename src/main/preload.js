@@ -113,6 +113,10 @@ contextBridge.exposeInMainWorld('deskpal', {
   // 记忆整理纪律（/discipline 查看面板；只读）
   disciplineView: () => invoke('discipline:view', {}),
 
+  // 演示模式（/demo 族命令；状态权威在主进程，会话级）
+  demoCommand: (text) => invoke('demo:command', { text }),
+  demoState: () => invoke('demo:state', {}),
+
   // 联网搜索（开发版：账本面板 + 设置页供应商配置）
   searchLedger: (range, track) => invoke('search:ledger', { range, track }),
   searchVerdict: (id, verdict) => invoke('search:verdict', { id, verdict }),

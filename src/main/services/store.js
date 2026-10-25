@@ -50,6 +50,9 @@ const DEFAULTS = {
     activity: { paused: false, idleThresholdSec: 180, windowPollMs: 1000, idlePollMs: 5000 },
     schedule: { leadEvent: 60, leadStart: 5, leadDeadline: 120, snoozeMin: 10, sound: true, systemNotification: true, catchupHours: 24 },
     agent: { enabled: true, maxRounds: 8, permissionTimeoutSec: 120, permissionMode: 'read', toolMaxTokens: 8192, toolCtxTokenBudget: 40000, webSearch: { enabled: false, autonomousDailyLimit: 100, cooldownMin: 10, blockedTopics: [] }, visionCapture: { screenEnabled: false } },
+    // 演示模式（v0.6.2）：开关与轮次是会话级内存态（重启重置，见 services/demo-mode.js）；
+    // 只有打字机速度持久化——一次调节全局生效，重启后仍按该速度显示（每分钟显示字数）
+    demo: { speed: 300 },
   },
   // Hindsight 语义记忆桥（v0.6）：apiUrl 指向过滤代理；autoPrompt=false 关闭启动询问
   hindsight: {

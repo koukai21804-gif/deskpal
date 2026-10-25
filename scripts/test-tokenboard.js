@@ -29,6 +29,9 @@ fs.mkdirSync(HOME, { recursive: true });
 fs.mkdirSync(DATADIR, { recursive: true });
 const NOW = Date.now();
 const iso = (msAgo) => new Date(NOW - msAgo).toISOString();
+// 「今日」事件的回溯量：常规 1 小时前；但午夜后一小时内运行时 1h 前落在昨天，
+// 会误伤 today 窗口断言（20261026 00:09 实测）——夹取到本地今日 00:01 之后
+const TODAY_AGO = Math.max(0, Math.min(3600e3, NOW - new Date(NOW).setHours(0, 0, 0, 0) - 60e3));
 
 // ---------- fixture：Claude Code transcript ----------
 {
@@ -41,7 +44,7 @@ const iso = (msAgo) => new Date(NOW - msAgo).toISOString();
     // 同一 message.id 两次落盘（resume 更新）：只计最后一次
     JSON.stringify({ type: 'assistant', timestamp: iso(2 * 86400e3), sessionId: 'sess-a', cwd: 'D:\\test\\proj', message: { id: 'msg_1', model: 'm-x', usage: usage(100, 50, 10, 5) } }),
     JSON.stringify({ type: 'assistant', timestamp: iso(2 * 86400e3), sessionId: 'sess-a', cwd: 'D:\\test\\proj', message: { id: 'msg_1', model: 'm-x', usage: usage(200, 80, 20, 8) } }),
-    JSON.stringify({ type: 'assistant', timestamp: iso(3600e3), sessionId: 'sess-a', message: { id: 'msg_2', model: 'm-y', usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 100, cache_creation_input_tokens: 0, output_tokens_details: { thinking_tokens: 120 } } } }),
+    JSON.stringify({ type: 'assistant', timestamp: iso(TODAY_AGO), sessionId: 'sess-a', message: { id: 'msg_2', model: 'm-y', usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 100, cache_creation_input_tokens: 0, output_tokens_details: { thinking_tokens: 120 } } } }),
   ];
   fs.writeFileSync(path.join(projDir, 'aaa.jsonl'), lines.join('\n') + '\n');
 }
@@ -169,7 +172,7 @@ let snap;
   ok(by.workbuddy.status === 'missing', 'workbuddy 未装 → missing');
 
   // claude-code 窗口（嵌套语义：今日 ⊂ 7天 ⊂ 30天 ⊂ 全部，各窗口独立过滤）
-  // 事件1（2天前）：200+80+20+8=308；事件2（1h前）：1000+500+100=1600
+  // 事件1（2天前）：200+80+20+8=308；事件2（1h前，跨午夜运行时锚到今日 00:01）：1000+500+100=1600
   const cc = by['claude-code'].windows;
   eq(cc.all.total, 308 + 1600, 'claude all=两条去重事件合计');
   eq(cc.d30.total, 308 + 1600, '两条都在 30 天内 → d30=同值');

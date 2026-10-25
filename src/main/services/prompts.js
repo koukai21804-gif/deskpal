@@ -189,6 +189,21 @@ function recentWorkBlock() {
   } catch (_) { return ''; }
 }
 
+// 演示模式注入（v0.6.2）：行为差异四条 + 红线重申 + 固定格式状态行。
+// 状态行 [DEMO_MODE: …] 必须是 system prompt 的最后一段（roleplaySystem 末尾拼接）；
+// demo 为 null（未开启）时整段返回空串——关闭后状态块完全移除、不得残留是验收项。
+function demoBlock(demo) {
+  if (!demo || !demo.on) return '';
+  return `
+【演示模式（demo mode）】用户正在向他人演示你的能力，本会话处于演示模式。行为差异只有以下四条，其余一切规则（人格宪法 canon 锁层、禁忌条款、诚实高于顺从、记忆与工具纪律）完全不变：
+- 主动推进：不再等待用户提问，每轮回复末尾主动给出下一步建议或一个可继续的话题钩子。
+- 术语降级：出现技术术语时，通俗解释从「可选」变为「必附」，且解释压缩到一句话以内。
+- 节奏加快：回复长度上限比平时压缩约 30%，避免演示时观众等待。
+- 明确标识：你的回复会由界面以打字机方式逐字显示（此条由界面执行，你正常输出即可，不要模仿打字机逐字空谈）。
+红线：演示模式不是表演模式——不得为了演示效果编造事实、夸大能力、隐瞒局限；诚实高于顺从不变。用户问「你现在处于什么模式」时如实回答「演示模式」，并说明可用「/demo off」退出。
+[DEMO_MODE: ON | 已持续 ${demo.rounds} 轮 | 退出命令 /demo off]`;
+}
+
 // ================= 聊天：角色扮演 =================
 // agent 段（任务执行模式 + 进展契约）与节拍协议升级（H1.9/H2.1）
 // mode：read=只读 / userData=数据目录内可写 / full=大部分目录可写（逐次批准）
@@ -303,7 +318,7 @@ ${mailboxBlock()}
    时间一律换算成绝对时间。只有意图明确、时间可确定才附加；拿不准就不附，绝不编造时间，也不要为了附标签而改变聊天语气。${beatSection()}${agentOn ? agentSection() + recentWorkBlock() : ''}
 ${pet.customPrompt ? `\n【自定义指令】\n${pet.customPrompt}` : ''}
 【当前时间】
-${nowText()}${sessionBlock()}`;
+${nowText()}${sessionBlock()}${demoBlock(opts.demo)}`;
 }
 
 // ================= 聊天：速问速答 =================
@@ -629,7 +644,7 @@ ${recentText}`;
 module.exports = {
   nowText, roleplaySystem, quickSystem, memoryExtractPrompt,
   userProfileDriftPrompt, stripHarnessNotes, HARNESS_NOTE_RE,
-  MEMORY_DISCIPLINE, isDisciplineCommand,
+  MEMORY_DISCIPLINE, isDisciplineCommand, demoBlock,
   scheduleParsePrompt, scheduleDecomposePrompt,
   readingOutlinePrompt, readingFlowPrompt, readingQAPrompt,
   readingDigestStepPrompt, readingFreeQAPrompt, readingDigestBlock,

@@ -25,6 +25,7 @@ const canon = require('./services/canon');
 const norekiLink = require('./services/noreki-link');
 const searchLedger = require('./services/agent/search-ledger');
 const netSearch = require('./services/agent/net-search');
+const demoMode = require('./services/demo-mode');
 
 function handle(channel, handler) {
   ipcMain.handle(channel, async (e, arg = {}) => {
@@ -257,10 +258,26 @@ function registerIpc() {
       if (searchLedger.isLedgerCommand(text)) return { ledgerCommand: true };
       if (require('./services/prompts').isDisciplineCommand(text)) return { disciplineCommand: true };
       if (/^\s*\/\s*tokens?\s*$/i.test(text)) return { tokenBoardCommand: true };
+      // /demo 族：主进程执行（状态权威在主进程），渲染层按回执接管；开/关切换
+      // 与 demo:command 同款落「系统事件」入史——兜底路径不落注会让 off 转折对模型不可见
+      if (demoMode.isCommand(text)) {
+        const r = demoMode.execute(text);
+        if (r.changed && r.transition) chat.pushDemoNote(r.transition);
+        return { demoCommand: true, demo: r };
+      }
     }
     chat.bumpUserCount(tab);
     return chat.send(tab, String(text).trim());
   });
+  // ---------- 演示模式（v0.6.2：会话级状态机 + 打字机速度） ----------
+  // execute 在活跃 roleplay 会话上执行；开/关切换落一条「系统事件」入史——
+  // off 注是关闭后模型仍能正确自述「普通模式」的唯一信号（状态块须完全移除，见 chat.pushDemoNote）
+  handle('demo:command', ({ text }) => {
+    const r = demoMode.execute(String(text || ''));
+    if (r.changed && r.transition) chat.pushDemoNote(r.transition);
+    return r;
+  });
+  handle('demo:state', () => demoMode.snapshot());
   handle('chat:stop', ({ reqId }) => {
     // ★H epoch 打断固定顺序：先停源头（LLM 流）→ 再由 loop 排干下游（世代号/权限/差分收尾）
     llm.stop(reqId);

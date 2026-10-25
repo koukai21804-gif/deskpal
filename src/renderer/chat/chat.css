@@ -54,6 +54,16 @@
 .tb-session .ss-count { flex: none; color: var(--dp-text-3); font-variant-numeric: tabular-nums; }
 .tb-session[hidden] { display: none; }
 
+/* 演示模式徽标（/demo 开启时显示在会话胶囊右侧；琥珀色与戏外工作轮同族） */
+.tb-demo {
+  flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
+  border-radius: var(--dp-r-full); font-size: var(--dp-fs-11); line-height: 20px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+  color: var(--dp-warn); background: var(--dp-warn-soft);
+  border: 1px solid color-mix(in oklab, var(--dp-warn) 35%, transparent);
+}
+.tb-demo[hidden] { display: none; }
+
 .tb-actions { display: flex; align-items: center; gap: var(--dp-s-1); margin-left: auto; flex: none; }
 .tb-sep { width: 1px; height: 18px; background: var(--dp-border); margin: 0 var(--dp-s-2); flex: none; }
 
