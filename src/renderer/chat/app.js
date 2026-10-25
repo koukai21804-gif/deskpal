@@ -856,6 +856,13 @@ dp.on('llm:done', async ({ tab: t, reqId, clean, emotion, schedule, aborted, bea
   };
   if (demoType) {
     refreshDemoState(); // 轮次在主进程 send 时已 +1，取回最新数刷新徽标
+    // 吐字前清空执行区（演示态下至多剩已决权限卡；倒计时 interval 先停防泄漏）——
+    // 吐字期间气泡只有正文；吐完 settle→renderAll 一次性带出时间线与 diff 卡
+    const area = el.querySelector('.agent-area');
+    if (area) {
+      area.querySelectorAll('.perm-card').forEach(pc => { if (pc._dpTimer) { clearInterval(pc._dpTimer); pc._dpTimer = null; } });
+      area.innerHTML = '';
+    }
     startTyper(el, raw, settle);
     return;
   }
@@ -872,6 +879,13 @@ dp.on('llm:error', ({ tab: t, error }) => {
 });
 
 // ---------- Agent 流式事件（仅 roleplay） ----------
+// 演示模式的执行过程/diff 卡不随流实时上屏：正文还在打字机吐字时子卡片先冒出来，
+// 吐字区随内容增长下移、难以定位阅读（20261026 用户反馈）。改为——演示态下步骤/
+// 变更只入 streaming.steps/changes 缓存，吐字完成后的 settle→renderAll 一次性带出
+// 时间线与 diff 卡（顺序=先吐字、后瞬间展示子卡片）。权限卡例外：它是阻塞运行的
+// 交互组件（等待用户点击），必须实时可见可点，不参与抑制。
+function demoSuppressExtras(t) { return demoState.on && t === 'roleplay'; }
+
 dp.on('agent:step', (d) => {
   if (!streaming || streaming.tab !== d.tab) return;
   if (streaming.reqId && d.reqId !== streaming.reqId) return;
@@ -882,6 +896,7 @@ dp.on('agent:step', (d) => {
     const body = streaming.el.querySelector('.body');
     body.innerHTML = '<span class="streaming-cursor"></span>';
   }
+  if (demoSuppressExtras(d.tab)) return; // 演示态：缓存进 steps，吐字后再展示
   renderTimeline(streaming.el.querySelector('.agent-area'), streaming.steps);
   scrollBottom();
 });
@@ -900,6 +915,7 @@ dp.on('agent:artifact', (d) => {
   if (!streaming || streaming.tab !== d.tab) return;
   if (streaming.reqId && d.reqId !== streaming.reqId) return;
   streaming.changes = d.changed || [];
+  if (demoSuppressExtras(d.tab)) return; // 演示态：只缓存，吐字后随 settle 展示
   renderDiffCard(streaming.el.querySelector('.agent-area'), streaming.changes);
   scrollBottom();
 });
@@ -910,7 +926,7 @@ dp.on('agent:done', (d) => {
   if (streaming.reqId && d.reqId !== streaming.reqId) return;
   if (d.changes && d.changes.length) {
     streaming.changes = d.changes;
-    renderDiffCard(streaming.el.querySelector('.agent-area'), streaming.changes);
+    if (!demoSuppressExtras(d.tab)) renderDiffCard(streaming.el.querySelector('.agent-area'), streaming.changes);
   }
 });
 
