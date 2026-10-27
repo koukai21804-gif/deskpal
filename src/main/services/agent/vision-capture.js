@@ -11,6 +11,7 @@
 const path = require('path');
 const store = require('../store');
 const llm = require('../llm');
+const i18n = require('../i18n');
 const permissions = require('./permissions');
 const { MAX_DATAURL_CHARS, probeImage, toDataUrl } = require('./image-utils');
 
@@ -119,9 +120,80 @@ function restoreSelfWindows(hidden, failures) {
   }
 }
 
+// ---- 多屏选屏（v0.6.4）：序号/别称解析 + 布局清单 ----
+// 用户会说「看副屏」「看右边那块」，模型需要把自然语言指代翻成 screen 序号。
+// 这组纯函数让选屏有三个支点：别称容错（主屏/副屏）、布局清单进回执（模型由此知道
+// 本机有几块屏、每块多大、在主屏哪个方位）、超界报错带布局（一次失败即可自纠正）。
+// screen 参数解析：缺省/主屏别称→0；副屏别称→1（仅双屏无歧义，多屏时指代不明须用序号）；
+// 数字字符串/数字→四舍五入；其余一律 invalid（宁拒不猜）
+function parseScreenArg(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return { kind: 'default' };
+  const s = String(value).trim();
+  if (/^-?\d+(\.\d+)?$/.test(s)) return { kind: 'number', n: Math.round(+s) };
+  if (/^(主屏|主显示器|primary|main)/i.test(s)) return { kind: 'primary' };
+  if (/^(副屏|副显示器|secondary)/i.test(s)) return { kind: 'secondary' };
+  return { kind: 'invalid' };
+}
+
+// 布局清单（主屏优先排序后逐屏标注）：#0 主屏 2560×1440｜#1 1920×1080（主屏右侧）｜#2 3840×2160（主屏上方）
+// 分辨率按 scaleFactor 还原成物理像素（用户感知的「4K 屏」是物理口径）；
+// 方位按与主屏的相对几何（中心点差超出主屏半宽/半高才算横/纵偏移，斜向组合如「左上方」）
+function displayLayout(displays, primaryId) {
+  const list = displays.slice();
+  const pIdx = list.findIndex(d => d.id === primaryId);
+  if (pIdx > 0) list.unshift(...list.splice(pIdx, 1));
+  const p = list[0];
+  if (!p) return '';
+  const phys = d => `${Math.round(d.size.width * (d.scaleFactor || 1))}×${Math.round(d.size.height * (d.scaleFactor || 1))}`;
+  const dir = (d) => {
+    const dx = (d.bounds.x + d.bounds.width / 2) - (p.bounds.x + p.bounds.width / 2);
+    const dy = (d.bounds.y + d.bounds.height / 2) - (p.bounds.y + p.bounds.height / 2);
+    const h = dx > p.bounds.width / 2 ? '右' : dx < -p.bounds.width / 2 ? '左' : '';
+    const v = dy > p.bounds.height / 2 ? '下' : dy < -p.bounds.height / 2 ? '上' : '';
+    if (h && v) return `主屏${h}${v}方`;
+    if (h) return `主屏${h}侧`;
+    if (v) return `主屏${v}方`;
+    return '';
+  };
+  return list.map((d, i) => `#${i} ${i === 0 ? '主屏 ' : ''}${phys(d)}${i > 0 && dir(d) ? `（${dir(d)}）` : ''}`).join('｜');
+}
+
+// 选屏解析（captureScreen 拿到 displays 后调用）：返回 {idx, sorted, layout} 或 {error}
+// sorted 为主屏优先的显示矩阵（与 captureScreen 的 desktopCapturer 匹配序一致），layout 供回执/报错引用
+function resolveScreenIndex(value, displays, primaryId) {
+  const sorted = displays.slice();
+  const pIdx = sorted.findIndex(d => d.id === primaryId);
+  if (pIdx > 0) sorted.unshift(...sorted.splice(pIdx, 1));
+  const layout = displayLayout(sorted, primaryId);
+  const count = sorted.length;
+  const parsed = parseScreenArg(value);
+  let idx = 0;
+  if (parsed.kind === 'number') idx = parsed.n;
+  else if (parsed.kind === 'primary') idx = 0;
+  else if (parsed.kind === 'secondary') {
+    if (count !== 2) return { error: `screen 参数收到「副屏」，但本机共 ${count} 块屏，指代不明。当前布局：${layout}——请改用序号（0=主屏）` };
+    idx = 1;
+  } else if (parsed.kind === 'invalid') {
+    return { error: `screen 参数无法识别：「${String(value)}」。可填屏序（0=主屏，1=副屏…）或「主屏」。当前布局：${layout}` };
+  }
+  if (!(idx >= 0) || idx >= count) {
+    return { error: `屏幕序号超出范围：本机共 ${count} 块屏（0–${count - 1}，0=主屏）。当前布局：${layout}——用户指代方位（如「右边的屏」）时按布局选对序号再调` };
+  }
+  return { idx, sorted, layout };
+}
+
+// 授权卡 scopePaths 用：把 screen 参数规整成可展示的屏序标签（解析不了就原样展示）
+function screenArgLabel(value) {
+  const p = parseScreenArg(value);
+  if (p.kind === 'default' || p.kind === 'primary') return '0';
+  if (p.kind === 'secondary') return '1';
+  if (p.kind === 'number') return String(p.n);
+  return String(value);
+}
+
 // ---- 桌面截屏 ----
 // 返回 {ok, buf(经 probeImage 缩样), mime, width, height, resized, screens, index, isPrimary,
-//        foreground, selfExcluded, warnings, stats}
+//        layout(多屏时), foreground, selfExcluded, warnings, stats}
 async function captureScreen({ index } = {}) {
   const electron = getElectron();
   if (!electron || !electron.screen) {
@@ -132,12 +204,10 @@ async function captureScreen({ index } = {}) {
   const { desktopCapturer, screen: escreen } = electron;
   const displays = escreen.getAllDisplays().slice();
   const primaryId = escreen.getPrimaryDisplay().id;
-  displays.sort((a, b) => (a.id === primaryId ? -1 : b.id === primaryId ? 1 : 0));
-  const idx = Number.isFinite(+index) && +index >= 0 ? Math.round(+index) : 0;
-  if (idx >= displays.length) {
-    return { ok: false, error: `屏幕序号超出范围：本机共 ${displays.length} 块屏（序号 0–${displays.length - 1}，0 为主屏）` };
-  }
-  const target = displays[idx];
+  const res = resolveScreenIndex(index, displays, primaryId);
+  if (res.error) return { ok: false, error: res.error };
+  const idx = res.idx;
+  const target = res.sorted[idx];
   const sf = target.scaleFactor || 1;
   // 缩略图按目标屏物理像素请求（上限 2048：vision 模型按贴片计费，超清纯浪费，image-utils 也会再缩）
   const pw = Math.round(target.size.width * sf), ph = Math.round(target.size.height * sf);
@@ -175,6 +245,7 @@ async function captureScreen({ index } = {}) {
     ok: true,
     buf: probe.buf, mime: probe.mime, width: probe.width || size.width, height: probe.height || size.height, resized: !!probe.resized,
     screens: displays.length, index: idx, isPrimary: target.id === primaryId,
+    layout: displays.length > 1 ? res.layout : undefined,
     foreground: fgTitle, selfExcluded: hidden.length, warnings, stats,
   };
 }
@@ -268,13 +339,13 @@ async function lookScreen(args, ctx) {
   if (!enabled || track === 'autonomous') {
     const pr = await permissions.request({
       runId: ctx && ctx.runId, reqId: ctx && ctx.reqId, tool: 'look_screen',
-      action: enabled ? '自主截取桌面' : '开启桌面查看（截屏识别）',
-      scopePaths: [`screen:${String(args.screen ?? '0')}`],
+      action: enabled ? i18n.t('自主截取桌面') : i18n.t('开启桌面查看（截屏识别）'),
+      scopePaths: [`screen:${screenArgLabel(args.screen)}`],
       detail: enabled
         ? reason
-        : '开启后可截取桌面画面交给你配置的模型服务商识别；可在 设置→API 关闭',
+        : i18n.t('开启后可截取桌面画面交给你配置的模型服务商识别；可在 设置→API 关闭'),
       reason,
-      reversibility: enabled ? '仅截取一帧，不落盘' : '设置→API 一键关闭（关闭即时生效）',
+      reversibility: enabled ? i18n.t('仅截取一帧，不落盘') : i18n.t('设置→API 一键关闭（关闭即时生效）'),
       timeoutSec: (ctx && ctx.permTimeoutSec) || 120,
     });
     if (pr.decision !== 'allow_once') {
@@ -282,7 +353,7 @@ async function lookScreen(args, ctx) {
     }
     if (!enabled) {
       store.set('settings', { agent: { visionCapture: { screenEnabled: true } } });
-      if (ctx && ctx.step) { try { ctx.step({ kind: 'notice', notice: 'screen_vision_enabled', text: '桌面查看已开启，可在 设置→API 关闭' }); } catch (_) {} }
+      if (ctx && ctx.step) { try { ctx.step({ kind: 'notice', notice: 'screen_vision_enabled', text: i18n.t('桌面查看已开启，可在 设置→API 关闭') }); } catch (_) {} }
     }
   }
 
@@ -292,9 +363,13 @@ async function lookScreen(args, ctx) {
   const dataUrl = toDataUrl(r.mime, r.buf);
   if (dataUrl.length > MAX_DATAURL_CHARS) return { ok: false, error: '截屏编码后超出接口体积上限，请换更低的屏幕分辨率或稍后再试' };
   const dims = `${r.width}×${r.height}`;
+  const multi = r.screens > 1;
+  // 多屏回执带布局清单（序号/物理分辨率/相对主屏方位）：模型由此把「看右边那块」「看副屏」
+  // 这类指代翻成 screen 序号；未指定屏时附一句选屏提示，指定了就不再啰嗦
   const parts = [
     `[look_screen] 桌面截图｜第 ${r.index} 块屏${r.isPrimary ? '（主屏）' : ''}${r.resized ? `（已自动缩放至 ${dims}）` : `｜${dims}`}`,
-    r.screens > 1 ? `本机共 ${r.screens} 块屏` : '',
+    multi ? (r.layout ? `共 ${r.screens} 块屏，布局：${r.layout}` : `本机共 ${r.screens} 块屏`) : '',
+    multi && parseScreenArg(args.screen).kind === 'default' ? '用户要看的是其他屏时，用 screen 参数按布局选序号' : '',
     `前台窗口「${r.foreground || '未知'}」`,
     r.selfExcluded ? `已排除自身窗口 ${r.selfExcluded} 个` : '',
   ].filter(Boolean).join('｜');
@@ -302,7 +377,7 @@ async function lookScreen(args, ctx) {
     ok: true,
     text: `${parts}｜图像已注入视觉上下文：基于画面实际内容作答，画面中没有的信息不要编造`,
     imagePart: { type: 'image_url', image_url: { url: dataUrl } },
-    meta: { tool: 'look_screen', path: `screen:${r.index}`, bytes: r.buf.length, width: r.width, height: r.height, mime: r.mime, resized: r.resized, screens: r.screens, foreground: r.foreground },
+    meta: { tool: 'look_screen', path: `screen:${r.index}`, bytes: r.buf.length, width: r.width, height: r.height, mime: r.mime, resized: r.resized, screens: r.screens, layout: r.layout, foreground: r.foreground },
   };
 }
 
@@ -318,11 +393,11 @@ async function lookCamera(args, ctx) {
   }
   const pr = await permissions.request({
     runId: ctx && ctx.runId, reqId: ctx && ctx.reqId, tool: 'look_camera',
-    action: '开启摄像头拍一帧',
+    action: i18n.t('开启摄像头拍一帧'),
     scopePaths: [`camera:${String(args.camera ?? '0')}`],
-    detail: '开启摄像头拍摄一帧当前实景，交给你配置的模型服务商识别；拍完立即关闭摄像头，不留任何影像',
+    detail: i18n.t('开启摄像头拍摄一帧当前实景，交给你配置的模型服务商识别；拍完立即关闭摄像头，不留任何影像'),
     reason,
-    reversibility: '拍完即关（画面不落盘），不拍摄即无任何采集',
+    reversibility: i18n.t('拍完即关（画面不落盘），不拍摄即无任何采集'),
     timeoutSec: (ctx && ctx.permTimeoutSec) || 120,
   });
   if (pr.decision !== 'allow_once') {
@@ -347,6 +422,7 @@ async function lookCamera(args, ctx) {
 module.exports = {
   lookScreen, lookCamera,
   captureScreen, captureCamera,
+  parseScreenArg, resolveScreenIndex, displayLayout, screenArgLabel,
   statsFromRGBA, isBlackFrame, foregroundWindowTitle,
   CAPTURE_PAGE_PATH,
   CAMERA_DENY_COOLDOWN_MS, HIDE_SETTLE_MS, CAMERA_WARMUP_FRAMES, THUMB_MAX_SIDE,

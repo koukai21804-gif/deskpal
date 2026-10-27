@@ -1,5 +1,5 @@
 // noreki-link.js — NOREKI-Mail v1.5（titor@deskpal 侧收发端点 + 状态账本）
-// 协议：D:/NorekiLink/PROTOCOL.md。分离铁律：本模块只碰 D:/NorekiLink 与
+// 协议：<邮局根目录>/PROTOCOL.md（NOREKI_LINK_ROOT）。分离铁律：本模块只碰邮局根目录与
 // 己方 userData 的密钥文件；绝不读写 Hermes 的 profile/记忆库/状态库。
 // v0.5.1 · 2026-10-11 · 作者：克莉奥（经父亲工作轮批准接入 deskpal）
 // v1.5 变更（2026-10-11，父亲拍板方案A）：
@@ -14,7 +14,7 @@ const logger = require('../logger');
 const windows = require('../windows');
 
 // N-9 测试注：环境变量可覆写邮局根目录（仅测试用；默认路径不变）
-const LINK_ROOT = process.env.NOREKI_LINK_ROOT || 'D:/NorekiLink';
+const LINK_ROOT = process.env.NOREKI_LINK_ROOT || path.join(require('os').homedir(), 'NorekiLink');
 const SELF_ID = 'titor@deskpal';
 const PEER_ID = 'clio@hermes';
 const OUTBOX_SUB = 'from-deskpal';   // 我写

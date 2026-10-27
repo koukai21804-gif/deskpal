@@ -1,5 +1,6 @@
 // 气泡组件：队列化展示；text 类自动消失，card 类停留至点击；同屏最多 1 张
 import { dp } from '../common/ipc.js';
+import { t, tf } from '../common/i18n.js';
 import { icon } from '../common/icons.js';
 
 const host = document.createElement('div');
@@ -49,12 +50,12 @@ function next() {
     el.className = 'dp-bubble schedule-card';
     el.innerHTML = `
       <div class="sc-title">${icon('calendar', 13)} ${esc(b.title)}</div>
-      <div class="sc-time">${esc(b.label)} · ${esc(b.timeText)}${b.nth ? `（第 ${b.nth + 1} 次提醒）` : ''}</div>
+      <div class="sc-time">${esc(b.label)} · ${esc(b.timeText)}${b.nth ? tf('（第 {0} 次提醒）', b.nth + 1) : ''}</div>
       <div class="b-actions">
-        <button data-a="dismiss" class="primary">知道了</button>
-        <button data-a="snooze">稍后10分钟</button>
-        <button data-a="done">已完成</button>
-        <button data-a="view">查看</button>
+        <button data-a="dismiss" class="primary">${t('知道了')}</button>
+        <button data-a="snooze">${t('稍后10分钟')}</button>
+        <button data-a="done">${t('已完成')}</button>
+        <button data-a="view">${t('查看')}</button>
       </div>`;
     el.addEventListener('click', async (e) => {
       const a = e.target.dataset && e.target.dataset.a;
@@ -70,8 +71,8 @@ function next() {
     el.className = 'dp-bubble';
     el.innerHTML = `<div class="b-text">${esc(b.text)}</div>
       <div class="b-actions">
-        <button data-a="yes" class="primary">好呀</button>
-        <button data-a="no">下次吧</button>
+        <button data-a="yes" class="primary">${t('好呀')}</button>
+        <button data-a="no">${t('下次吧')}</button>
       </div>`;
     el.addEventListener('click', (e) => {
       const a = e.target.dataset && e.target.dataset.a;
@@ -83,8 +84,8 @@ function next() {
   } else if (b.kind === 'perm-ask') {
     // H 写权限批准：点击「去批准」聚焦聊天窗；超时自动消失（权限卡本身有倒计时）
     el.className = 'dp-bubble';
-    el.innerHTML = `<div class="b-text">${icon('shield', 14)} ${esc(b.text || '有个文件操作需要你批准')}</div>
-      <div class="b-actions"><button data-a="go" class="primary">去批准</button></div>`;
+    el.innerHTML = `<div class="b-text">${icon('shield', 14)} ${esc(b.text || t('有个文件操作需要你批准'))}</div>
+      <div class="b-actions"><button data-a="go" class="primary">${t('去批准')}</button></div>`;
     el.addEventListener('click', (e) => {
       const a = e.target.dataset && e.target.dataset.a;
       if (!a) return;

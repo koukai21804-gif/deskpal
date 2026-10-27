@@ -9,6 +9,7 @@ const canon = require('./canon');
 const documents = require('./documents');
 const llm = require('./llm');
 const prompts = require('./prompts');
+const i18n = require('./i18n');
 const emotion = require('./emotion');
 const video = require('./video');
 const { rescueJSON } = require('./json-utils');
@@ -156,7 +157,7 @@ async function genOutline(book) {
   const sample = book.text.slice(0, 6000);
   const mkMsgs = (retry) => [{
     role: 'system',
-    content: prompts.readingOutlinePrompt(book.meta.title, sample) +
+    content: prompts.readingOutlinePrompt(book.meta.title, sample) + prompts.langDirective() +
       (retry ? '\n\n【注意】上一次输出无法解析为 JSON。请严格只输出一个 JSON 对象，以 { 开头、以 } 结尾，不要有任何解释文字或代码围栏。' : ''),
   }];
   let j = null;
@@ -214,7 +215,7 @@ function validateFlow(items) {
 async function genFlow(pet, master, section, sectionText, index, total, bookTitle) {
   const mkMessages = (errMsg) => [{
     role: 'system',
-    content: prompts.readingFlowPrompt(pet, master, section, sectionText, index + 1, total, bookTitle) +
+    content: prompts.readingFlowPrompt(pet, master, section, sectionText, index + 1, total, bookTitle) + prompts.langDirective() +
       (errMsg ? `\n\n【上一次输出校验失败，请修正】\n${errMsg}\n请重新输出完整 JSON 数组。` : ''),
   }];
   let lastErr = '';
@@ -234,8 +235,8 @@ async function genFlow(pet, master, section, sectionText, index, total, bookTitl
   }
   // 两次都失败：给出最小可播兜底（台词帧 + 无测验）保证流程可走
   return [
-    { t: 'd', e: section.mood || 'normal', x: `这一节「${section.title}」的剧本我演砸了…不过要点是：${(section.keyPoints || [section.summary]).join('；')}`, bb: `## ${section.title}\n${section.summary}` },
-    { t: 'd', e: 'sad', x: '刚才生成剧本时出了点小差错，我们继续下一节吧！', bb: '' },
+    { t: 'd', e: section.mood || 'normal', x: i18n.tf('这一节「{0}」的剧本我演砸了…不过要点是：{1}', section.title, (section.keyPoints || [section.summary]).join('；')), bb: `## ${section.title}\n${section.summary}` },
+    { t: 'd', e: 'sad', x: i18n.t('刚才生成剧本时出了点小差错，我们继续下一节吧！'), bb: '' },
   ];
 }
 
@@ -266,7 +267,7 @@ async function genDigestStep(pet, bookTitle, notes, chunk, index, total) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const out = await llm.genericCompletion([{
       role: 'system',
-      content: prompts.readingDigestStepPrompt(pet, bookTitle, notes, chunk, index, total) +
+      content: prompts.readingDigestStepPrompt(pet, bookTitle, notes, chunk, index, total) + prompts.langDirective() +
         (attempt > 0 ? '\n\n【注意】上一次输出异常。只输出笔记正文纯文本，不要任何标题、代码围栏或解释。' : ''),
     }], { temperature: 0.3, maxTokens: 4200 });
     const clean = stripFences(out);
@@ -280,11 +281,11 @@ async function generateFree(bookId, lib, book, state) {
   const personaData = canon.view();
   const pet = personaData.pet;
   const windows = digestWindows(book.text);
-  progress(bookId, 'digest', 8, `开始通读《${lib.title}》全文（共 ${windows.length} 段）…`);
+  progress(bookId, 'digest', 8, i18n.tf('开始通读《{0}》全文（共 {1} 段）…', lib.title, windows.length));
   let notes = '';
   for (let i = 0; i < windows.length; i++) {
     if (state.canceled) throw friendlyError('已取消');
-    progress(bookId, 'digest', 8 + Math.round(((i + 1) / windows.length) * 82), `正在通读第 ${i + 1}/${windows.length} 段并整理笔记…`);
+    progress(bookId, 'digest', 8 + Math.round(((i + 1) / windows.length) * 82), i18n.tf('正在通读第 {0}/{1} 段并整理笔记…', i + 1, windows.length));
     const next = await genDigestStep(pet, lib.title, notes, windows[i], i + 1, windows.length);
     if (next) notes = next;
     else if (i === 0 && !notes) notes = windows[i].slice(0, DIGEST_NOTES_CAP); // 首段彻底失败：原文摘录兜底
@@ -297,7 +298,7 @@ async function generateFree(bookId, lib, book, state) {
   lib.status = 'ready';
   lib.updatedAt = dayjs().format();
   store.writeJSON(libPath(bookId), lib);
-  progress(bookId, 'done', 100, '通读完成，我随时可以回答关于这份资料的问题');
+  progress(bookId, 'done', 100, i18n.t('通读完成，我随时可以回答关于这份资料的问题'));
 }
 
 // ---------- 生成主流程 ----------
@@ -322,7 +323,7 @@ async function generate(bookId, { mode = 'flow' } = {}) {
         return;
       }
 
-      progress(bookId, 'outline', 5, '正在分析全书结构…');
+      progress(bookId, 'outline', 5, i18n.t('正在分析全书结构…'));
 
       const personaData = canon.view();
       const pet = personaData.pet;
@@ -330,14 +331,14 @@ async function generate(bookId, { mode = 'flow' } = {}) {
       const outline = await genOutline(book);
       if (state.canceled) throw friendlyError('已取消');
       lib.outline = outline;
-      progress(bookId, 'outline', 20, `大纲完成：共 ${outline.length} 节`);
+      progress(bookId, 'outline', 20, i18n.tf('大纲完成：共 {0} 节', outline.length));
 
       const total = outline.length;
       const compiled = [];
       for (let i = 0; i < total; i++) {
         if (state.canceled) throw friendlyError('已取消');
         const sec = outline[i];
-        progress(bookId, 'flow', 20 + Math.round((i / total) * 75), `正在编写第 ${i + 1}/${total} 节「${sec.title}」的剧本…`);
+        progress(bookId, 'flow', 20 + Math.round((i / total) * 75), i18n.tf('正在编写第 {0}/{1} 节「{2}」的剧本…', i + 1, total, sec.title));
         const slice = sectionSlice(book.text, i, total);
         const flow = await genFlow(pet, master, sec, slice, i, total, lib.title);
         // 帧编译：线性 next；测验帧选项反馈后汇聚到下一帧
@@ -359,14 +360,14 @@ async function generate(bookId, { mode = 'flow' } = {}) {
       lib.cursor = lib.cursor || (compiled.length ? compiled[0].id : null);
       lib.updatedAt = dayjs().format();
       store.writeJSON(libPath(bookId), lib);
-      progress(bookId, 'done', 100, `剧本完成，共 ${compiled.length} 帧`);
+      progress(bookId, 'done', 100, i18n.tf('剧本完成，共 {0} 帧', compiled.length));
     } catch (e) {
       const l = load(bookId);
       if (state.canceled) { l.status = 'parsed'; l.error = null; }
       else { l.status = 'error'; l.error = e.userMsg || e.message; }
       l.updatedAt = dayjs().format();
       store.writeJSON(libPath(bookId), l);
-      progress(bookId, state.canceled ? 'cancel' : 'error', 0, state.canceled ? '已取消' : l.error);
+      progress(bookId, state.canceled ? 'cancel' : 'error', 0, state.canceled ? i18n.t('已取消') : l.error);
       logger.warn('陪读生成' + (state.canceled ? '已取消' : '失败') + ': ' + (l.error || ''));
     } finally {
       generating.delete(bookId);
@@ -418,12 +419,12 @@ async function ask(bookId, question) {
   // 检索上下文：自由模式多带几段（没有剧情节次锚点，问答全靠它）
   const excerpts = relevantExcerpts(book ? book.text : '', question, free ? 4 : 3);
   const messages = free
-    ? [{ role: 'system', content: prompts.readingFreeQAPrompt(pet, master, question, lib.notes || '（笔记缺失，只能靠原文节选回答）', excerpts) }]
+    ? [{ role: 'system', content: prompts.readingFreeQAPrompt(pet, master, question, lib.notes || i18n.t('（笔记缺失，只能靠原文节选回答）'), excerpts) + prompts.langDirective() }]
     : (() => {
       // 当前所在节的上下文（outline 存的是 id 字段，帧引用 sectionId——两边对齐）
       const curFrame = (lib.frames || []).find(f => f.id === lib.cursor);
       const contextSection = lib.outline ? ((lib.outline.find(s => s.id === (curFrame && curFrame.sectionId)) || {}).title || '') : '';
-      return [{ role: 'system', content: prompts.readingQAPrompt(pet, master, question, excerpts, contextSection) }];
+      return [{ role: 'system', content: prompts.readingQAPrompt(pet, master, question, excerpts, contextSection) + prompts.langDirective() }];
     })();
 
   (async () => {

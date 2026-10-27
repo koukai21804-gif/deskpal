@@ -24,7 +24,7 @@ async function generate(range) {
     try {
       const master = canon.view().user.name || '主人';
       const raw = await llm.streamChat({
-        messages: [{ role: 'system', content: prompts.timeReportPrompt(pet, master, JSON.stringify(feed, null, 1)) }],
+        messages: [{ role: 'system', content: prompts.timeReportPrompt(pet, master, JSON.stringify(feed, null, 1)) + prompts.langDirective() }],
         reqId,
         onChunk: (delta) => { if (win && !win.isDestroyed()) win.webContents.send('report:chunk', { reqId, delta }); },
       });

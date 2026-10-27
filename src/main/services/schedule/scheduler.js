@@ -7,6 +7,7 @@ const store = require('../store');
 const emotion = require('../emotion');
 const windows = require('../../windows');
 const logger = require('../../logger');
+const i18n = require('../i18n');
 
 let timer = null;
 let data = null; // { version, events: [] }
@@ -78,17 +79,17 @@ function materializeReminders(ev) {
   const start = ev.start ? dayjs(ev.start) : null;
   const deadline = ev.deadline ? dayjs(ev.deadline) : null;
   if (ev.remindPreset === 'event' && start) {
-    mk(start.subtract(s.leadEvent, 'minute'), `提前${s.leadEvent}分钟`, 'lead');
-    mk(start, '开始', 'atstart');
+    mk(start.subtract(s.leadEvent, 'minute'), i18n.tf('提前{0}分钟', s.leadEvent), 'lead');
+    mk(start, i18n.t('开始'), 'atstart');
   } else if (ev.remindPreset === 'start' && start) {
-    mk(start.subtract(s.leadStart, 'minute'), `提前${s.leadStart}分钟`, 'lead');
-    mk(start, '开始', 'atstart');
+    mk(start.subtract(s.leadStart, 'minute'), i18n.tf('提前{0}分钟', s.leadStart), 'lead');
+    mk(start, i18n.t('开始'), 'atstart');
   } else if (ev.remindPreset === 'only_start' && start) {
     // 仅开始时刻提醒一次（repeat 提醒用：避免每天多响一次「提前N分钟」）
-    mk(start, '开始', 'atstart');
+    mk(start, i18n.t('开始'), 'atstart');
   } else if (ev.remindPreset === 'deadline' && deadline) {
-    mk(deadline.subtract(s.leadDeadline, 'minute'), `提前${s.leadDeadline}分钟`, 'lead');
-    mk(deadline, '截止', 'atdeadline');
+    mk(deadline.subtract(s.leadDeadline, 'minute'), i18n.tf('提前{0}分钟', s.leadDeadline), 'lead');
+    mk(deadline, i18n.t('截止'), 'atdeadline');
   }
   ev.reminders = rs;
 }
@@ -176,9 +177,9 @@ function dismissReminder(eventId, reminderId) {
 // ---------- 触发 ----------
 function relTimeText(at, kind) {
   const diffMin = dayjs(at).diff(dayjs(), 'minute');
-  if (kind === 'atstart') return diffMin <= 1 ? '现在开始啦' : `${diffMin} 分钟后开始`;
-  if (kind === 'atdeadline') return diffMin <= 1 ? '就是现在截止！' : `${diffMin} 分钟后截止`;
-  return diffMin <= 1 ? '马上就开始！' : `还有 ${diffMin} 分钟`;
+  if (kind === 'atstart') return diffMin <= 1 ? i18n.t('现在开始啦') : i18n.tf('{0} 分钟后开始', diffMin);
+  if (kind === 'atdeadline') return diffMin <= 1 ? i18n.t('就是现在截止！') : i18n.tf('{0} 分钟后截止', diffMin);
+  return diffMin <= 1 ? i18n.t('马上就开始！') : i18n.tf('还有 {0} 分钟', diffMin);
 }
 
 function fire(ev, r, nth = 0) {
@@ -196,7 +197,7 @@ function fire(ev, r, nth = 0) {
   if (s.systemNotification !== false && Notification.isSupported()) {
     const n = new Notification({
       title: `📅 ${ev.title}`,
-      body: `${r.label}｜${relTimeText(r.kind === 'atdeadline' ? (ev.deadline || r.at) : (ev.start || r.at), r.kind)}${nth ? `（第 ${nth + 1} 次提醒）` : ''}`,
+      body: `${r.label}｜${relTimeText(r.kind === 'atdeadline' ? (ev.deadline || r.at) : (ev.start || r.at), r.kind)}${nth ? i18n.tf('（第 {0} 次提醒）', nth + 1) : ''}`,
     });
     n.on('click', () => windows.openWindow('schedule'));
     n.show();

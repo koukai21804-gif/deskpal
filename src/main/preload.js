@@ -15,9 +15,15 @@ const PUSH_CHANNELS = [
   'schedule:remind', 'schedule:catchup', 'schedule:changed', 'schedule:prefill',
   'ui:open-panel',
   'activity:idle-back', 'time:changed',
+  'i18n:changed',
 ];
 
 const invoke = (channel, arg) => ipcRenderer.invoke(channel, arg);
+
+// i18n 语言同步桥（v0.7.0）：各窗 ES module 顶层就拼 UI 文案，等不了异步 IPC，
+// 用 sendSync 在任何模块执行前拿到当前语言（词典 classic script 同理先于 module 执行）
+let DP_LANG = 'zh';
+try { DP_LANG = ipcRenderer.sendSync('i18n:lang') || 'zh'; } catch (_) {}
 
 // 订阅推送：返回取消函数
 function on(channel, cb) {
@@ -27,6 +33,7 @@ function on(channel, cb) {
   return () => ipcRenderer.off(channel, handler);
 }
 
+contextBridge.exposeInMainWorld('DP_I18N_LANG', DP_LANG);
 contextBridge.exposeInMainWorld('deskpal', {
   // 订阅（白名单通道）
   on,
@@ -57,6 +64,8 @@ contextBridge.exposeInMainWorld('deskpal', {
   themeGet: () => invoke('theme:get', {}),
   themeSet: (patch) => invoke('theme:set', patch),
   themePresets: () => invoke('theme:presets', {}),
+  // 界面语言（v0.7.0）：切换后主进程广播 i18n:changed，各窗重载生效
+  i18nSet: (lang) => invoke('i18n:set', { lang }),
   buildSystemPreview: () => invoke('prompt:preview', {}),
   saveApiKey: (key) => invoke('api:save-key', { key }),
 

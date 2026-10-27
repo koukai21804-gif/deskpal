@@ -1,5 +1,5 @@
 // hindsight — Hindsight 语义记忆的 LLM 消耗（retain 提取）。
-// 数据源：过滤代理的 token 台账（D:\hindsight\proxy\logs\usage.jsonl，代理在 retain 响应里
+// 数据源：过滤代理的 token 台账（<Hindsight 安装目录>\proxy\logs\usage.jsonl，代理在 retain 响应里
 // 抓 usage 追加）。每个 bank 一个「会话」，每次 retain 一个事件。
 // 边界声明（评审 §6.1 条款三）：只读数字台账，不触记忆内容端点，不跨 bank 检索——
 // 汇总给人看的运维面板，属「控制台可见全部 bank」的运维可见性范畴。
@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { anyToMs, isNum } = require('../util');
 
-const USAGE_FILE_DEFAULT = path.join('D:', path.sep, 'hindsight', 'proxy', 'logs', 'usage.jsonl');
+const USAGE_FILE_DEFAULT = path.join(require('os').homedir(), '.hindsight', 'proxy', 'logs', 'usage.jsonl');
 function usageFile() {
   // scan 时求值（勿在模块级固化）：测试用 HINDSIGHT_USAGE_LOG 指向夹具，env 后改须生效
   return process.env.HINDSIGHT_USAGE_LOG || USAGE_FILE_DEFAULT;
@@ -27,7 +27,7 @@ function readModel() {
 module.exports = {
   id: 'hindsight',
   name: 'Hindsight 记忆',
-  // 台账在本机固定路径（D:\hindsight），不随设备根走——同 deskpal：只随本机扫一次，
+  // 台账路径随 HINDSIGHT_USAGE_LOG（本机在 env 里指向 Hindsight 安装目录），不随设备根走——同 deskpal：只随本机扫一次，
   // 否则会对每个设备根重复累计（test-tokenboard PC-2 设备维度测试逮过这个错）
   usesDataDir: true,
   scan() {

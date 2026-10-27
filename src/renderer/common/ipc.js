@@ -1,4 +1,6 @@
 // 渲染层公共：主题应用 / IPC 薄封装 / 工具函数
+import { tf } from './i18n.js';
+
 export const dp = window.deskpal; // preload 注入
 
 // ---------- 主题 ----------
@@ -39,9 +41,9 @@ export function esc(s) {
 
 export function fmtMin(min) {
   const m = Math.max(0, Math.round(min || 0));
-  if (m < 60) return m + ' 分钟';
+  if (m < 60) return tf('{0} 分钟', m);
   const h = Math.floor(m / 60), r = m % 60;
-  return r ? `${h} 小时 ${r} 分` : `${h} 小时`;
+  return r ? tf('{0} 小时 {1} 分', h, r) : tf('{0} 小时', h);
 }
 
 export function debounce(fn, ms = 300) {

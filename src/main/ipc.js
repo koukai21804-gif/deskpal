@@ -26,6 +26,7 @@ const norekiLink = require('./services/noreki-link');
 const searchLedger = require('./services/agent/search-ledger');
 const netSearch = require('./services/agent/net-search');
 const demoMode = require('./services/demo-mode');
+const i18n = require('./services/i18n');
 
 function handle(channel, handler) {
   ipcMain.handle(channel, async (e, arg = {}) => {
@@ -231,6 +232,17 @@ function registerIpc() {
   });
   handle('shell:show-in-folder', ({ path: p }) => { shell.showItemInFolder(p); return { ok: true }; });
   handle('app:info', () => ({ version: app.getVersion(), dataDir: store.getDataDir() }));
+
+  // ---------- i18n（v0.7.0 双语界面） ----------
+  // 同步语言桥（sendSync）：渲染层 ES module 顶层拼 UI 文案，等不了异步 IPC
+  ipcMain.on('i18n:lang', (e) => { e.returnValue = store.get('settings').language || 'zh'; });
+  // 切换语言：落 settings.language → 广播全窗（各窗收到后自行重载，UI 文案在渲染层静态拼装）
+  handle('i18n:set', ({ lang }) => {
+    const v = lang === 'en' ? 'en' : 'zh';
+    store.set('settings', { language: v });
+    windows.broadcastAll('i18n:changed', { lang: v });
+    return { lang: v };
+  });
   handle('app:ding', () => {
     try {
       const wav = fs.readFileSync(path.join(__dirname, '..', 'resources', 'ding.wav'));
@@ -570,28 +582,28 @@ function openTokenBoardFromMenu() { openPanelInChat('tokens'); }
 function buildPetMenu() {
   const commands = launcher.list();
   const tpl = [
-    { label: '💬 聊天', click: () => windows.openWindow('chat') },
-    { label: '📖 陪读', click: () => windows.openWindow('reader') },
-    { label: '⏱ 时间统计', click: () => windows.openWindow('time') },
-    { label: '⚡ Token 看板', click: openTokenBoardFromMenu },
-    { label: '📅 日程', click: () => windows.openWindow('schedule') },
-    { label: '🎨 换装/形象', click: () => windows.openWindow('settings') },
-    { label: '⚙️ 设置', click: () => windows.openWindow('settings') },
+    { label: i18n.t('💬 聊天'), click: () => windows.openWindow('chat') },
+    { label: i18n.t('📖 陪读'), click: () => windows.openWindow('reader') },
+    { label: i18n.t('⏱ 时间统计'), click: () => windows.openWindow('time') },
+    { label: i18n.t('⚡ Token 看板'), click: openTokenBoardFromMenu },
+    { label: i18n.t('📅 日程'), click: () => windows.openWindow('schedule') },
+    { label: i18n.t('🎨 换装/形象'), click: () => windows.openWindow('settings') },
+    { label: i18n.t('⚙️ 设置'), click: () => windows.openWindow('settings') },
     { type: 'separator' },
   ];
   if (commands.length) {
     tpl.push({
-      label: '🚀 快捷打开',
+      label: i18n.t('🚀 快捷打开'),
       submenu: commands.slice(0, 10).map(c => ({
-        label: c.phrase + (c.missing ? '（路径失效）' : ''),
+        label: c.phrase + (c.missing ? i18n.t('（路径失效）') : ''),
         click: () => launcher.runById(c.id).catch(() => {}),
       })),
     });
   }
   tpl.push(
-    { label: '😴 休息一下', click: () => toggleSleep() },
+    { label: i18n.t('😴 休息一下'), click: () => toggleSleep() },
     { type: 'separator' },
-    { label: '🚪 退出', click: () => require('electron').app.quit() },
+    { label: i18n.t('🚪 退出'), click: () => require('electron').app.quit() },
   );
   return Menu.buildFromTemplate(tpl);
 }

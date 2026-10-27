@@ -10,6 +10,7 @@
 // 打字机渲染在聊天窗渲染层，记忆 demo 标记在 memory.addMemory/mergeExtracted。
 const store = require('./store');
 const logger = require('../logger');
+const i18n = require('./i18n');
 
 const SPEED_MIN = 20, SPEED_MAX = 3000, SPEED_DEFAULT = 300; // 每分钟显示字数
 // /demo 命令识别（渲染层与主进程双端同款思路；主进程兜底防止命令被误发进 LLM/历史）
@@ -76,40 +77,40 @@ function isCommand(text) { return DEMO_COMMAND_RE.test(String(text || '')); }
 function execute(text, sessionId) {
   const { key, st } = stateOf(sessionId);
   const m = String(text || '').match(DEMO_COMMAND_RE);
-  if (!m) return { ok: false, changed: false, message: '不是演示模式命令', state: snapshot(key) };
+  if (!m) return { ok: false, changed: false, message: i18n.t('不是演示模式命令'), state: snapshot(key) };
   const rest = String(m[1] || '').trim();
 
   // /demo speed -XX | /demo speed XX（横线是命令行惯用的前缀写法，不是负数）
   const sp = rest.match(/^speed\s+(\-?\d+)$/i);
   if (sp || /^speed\b/i.test(rest)) {
-    if (!sp) return { ok: false, changed: false, message: `调速失败：速度必须是 ${SPEED_MIN}-${SPEED_MAX} 之间的整数（每分钟显示字数）。示例：/demo speed -150`, state: snapshot(key) };
+    if (!sp) return { ok: false, changed: false, message: i18n.tf('调速失败：速度必须是 {0}-{1} 之间的整数（每分钟显示字数）。示例：/demo speed -150', SPEED_MIN, SPEED_MAX), state: snapshot(key) };
     const r = setSpeed(sp[1].replace(/^\-/, ''));
     return r.ok
-      ? { ok: true, changed: false, message: `打字机速度已设为每分钟 ${r.speed} 字（全局生效，重启后保持）`, state: snapshot(key) }
-      : { ok: false, changed: false, message: `调速失败：${r.error}。示例：/demo speed -150`, state: snapshot(key) };
+      ? { ok: true, changed: false, message: i18n.tf('打字机速度已设为每分钟 {0} 字（全局生效，重启后保持）', r.speed), state: snapshot(key) }
+      : { ok: false, changed: false, message: i18n.tf('调速失败：{0}。示例：/demo speed -150', r.error), state: snapshot(key) };
   }
   // /demo off
   if (/^off$/i.test(rest)) {
-    if (!st.on) return { ok: true, changed: false, message: '当前不在演示模式中', state: snapshot(key) };
+    if (!st.on) return { ok: true, changed: false, message: i18n.t('当前不在演示模式中'), state: snapshot(key) };
     st.on = false;
     logger.info('[demo] 演示模式退出（' + key + '，共 ' + st.rounds + ' 轮）');
-    return { ok: true, changed: true, transition: 'off', message: `已退出演示模式（本次共 ${st.rounds} 轮）`, state: snapshot(key) };
+    return { ok: true, changed: true, transition: 'off', message: i18n.tf('已退出演示模式（本次共 {0} 轮）', st.rounds), state: snapshot(key) };
   }
   // /demo status
   if (/^status$/i.test(rest)) {
     return st.on
-      ? { ok: true, changed: false, message: `演示模式：开启中，已持续 ${st.rounds} 轮（打字机 ${getSpeed()} 字/分钟）；退出用 /demo off`, state: snapshot(key) }
-      : { ok: true, changed: false, message: `演示模式：未开启（打字机速度 ${getSpeed()} 字/分钟已记忆）`, state: snapshot(key) };
+      ? { ok: true, changed: false, message: i18n.tf('演示模式：开启中，已持续 {0} 轮（打字机 {1} 字/分钟）；退出用 /demo off', st.rounds, getSpeed()), state: snapshot(key) }
+      : { ok: true, changed: false, message: i18n.tf('演示模式：未开启（打字机速度 {0} 字/分钟已记忆）', getSpeed()), state: snapshot(key) };
   }
   // /demo（或未知后缀）：进入演示模式；已在演示中则提示状态、不重复进入
   if (st.on) {
-    return { ok: true, changed: false, message: `已在演示模式中（已持续 ${st.rounds} 轮）。退出用 /demo off，查看状态用 /demo status`, state: snapshot(key) };
+    return { ok: true, changed: false, message: i18n.tf('已在演示模式中（已持续 {0} 轮）。退出用 /demo off，查看状态用 /demo status', st.rounds), state: snapshot(key) };
   }
   st.on = true; st.rounds = 0; st.since = new Date().toISOString();
   logger.info('[demo] 演示模式开启（' + key + '）');
   return {
     ok: true, changed: true, transition: 'on',
-    message: `演示模式已开启：主动推进 / 术语必附短解 / 回复提速约 30% / 打字机逐字显示（${getSpeed()} 字/分钟）。退出用 /demo off`,
+    message: i18n.tf('演示模式已开启：主动推进 / 术语必附短解 / 回复提速约 30% / 打字机逐字显示（{0} 字/分钟）。退出用 /demo off', getSpeed()),
     state: snapshot(key),
   };
 }

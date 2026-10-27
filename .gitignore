@@ -22,3 +22,8 @@ docs/
 # 本地备份目录
 backups/
 tools/.hindsight-import-state.json
+
+# 个人数据防误提交（推送前审计 20261028）
+*.seed.json
+*.pet.json
+*.private.*

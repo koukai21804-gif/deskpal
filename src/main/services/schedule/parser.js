@@ -11,7 +11,7 @@ async function parseNL(text) {
   let out = null;
   try {
     const res = await llm.genericCompletion(
-      [{ role: 'system', content: prompts.scheduleParsePrompt(text) }],
+      [{ role: 'system', content: prompts.scheduleParsePrompt(text) + prompts.langDirective() }],
       { temperature: 0.1, maxTokens: 400 },
     );
     out = rescueJSON(res);

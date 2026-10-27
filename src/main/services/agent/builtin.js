@@ -1,4 +1,5 @@
-// 内置工具：read_file / list_dir / write_file / save_memory / add_reminder / web_search（文件类经 fs-guard 仲裁）
+// 内置工具：read_file / list_dir / write_file / save_memory / deep_memory / add_reminder / web_search
+// （文件类经 fs-guard 仲裁；deep_memory 是 Hindsight 深层记忆库的只读查看面，v0.6.3）
 // write_file 的用户批准由 loop 的权限闸统一拦截（H1.4）；handler 内 fs-guard 校验保留作双保险。
 const guard = require('../fs-guard');
 const memory = require('../memory');
@@ -139,9 +140,9 @@ tools.register({
 // 回执结构与 read_image 相同（{text, imagePart, meta}），loop 按 imagePart 通用注入。
 tools.register({
   name: 'look_screen',
-  desc: '截取当前桌面画面并送入你的视觉上下文（识别屏幕上正在显示的内容）。用户明确让你看屏幕/桌面时才调用（如「看看我屏幕上这个」「桌面上这个报错是什么」）；比喻性的「你看」「你猜我看到了什么」不是截屏请求，此前看过的画面凭上下文回忆即可、不要重复截屏。多屏用 screen 指定序号（0=主屏）。截屏画面会发送给你配置的模型服务商做识别',
+  desc: '截取当前桌面画面并送入你的视觉上下文（识别屏幕上正在显示的内容）。用户明确让你看屏幕/桌面时才调用（如「看看我屏幕上这个」「桌面上这个报错是什么」）；比喻性的「你看」「你猜我看到了什么」不是截屏请求，此前看过的画面凭上下文回忆即可、不要重复截屏。多显示器时用 screen 指定看哪块屏（0=主屏）；不确定有几块屏/哪块在哪就直接调用，回执会带屏幕布局清单（序号/分辨率/相对主屏方位）。截屏画面会发送给你配置的模型服务商做识别',
   params: {
-    screen: 'string 可选：屏幕序号（0=主屏，1=副屏…），缺省主屏',
+    screen: 'string 可选：要看哪块屏——序号 0=主屏、1=副屏…，也接受「主屏/primary」（=0）；双屏时可填「副屏/secondary」（=1）。缺省主屏。用户指代方位（如「右边的屏」）时，按最近回执里的布局清单选序号',
     track: 'string designated=用户明确要求看屏幕（默认）/autonomous=你主动想看（须用户逐次批准）',
     reason: 'string ≤60字：为什么需要看屏幕（两种轨道都必填）',
   },
@@ -194,6 +195,93 @@ tools.register({
   },
 });
 
+// deep_memory：深层记忆库（Hindsight 语义记忆服务）的只读查看面（v0.6.3）。
+// save_memory 是写入面（本地库+Hindsight 双写），本工具是读取面——缇托由此能按需回答
+// 「你记了什么/记忆服务正不正常/最近几条不同项目的记忆」这类问题，而不必再如实拒绝。
+// 与策展记忆（memory/roleplay，注入在 system 前段）分开的第二套长期记忆：每轮戏内对话
+// 自动做语义召回注入的【深层记忆】块正是它。写入永远只进 deskpal-tito（bridge 硬隔离）；
+// hermes-* 是同一记忆服务里其他项目的库，只读。
+const HS_DOWN_HINT = '深层记忆服务（Hindsight）当前不可达。请如实告知用户服务没在运行，可运行 Hindsight 安装目录下的 hindsight-service.bat start 启动（或重启 deskpal 时在启动询问里选择开启）；服务恢复前不要编造任何记忆条目或服务状态';
+
+function hsRow(bank, it) {
+  const d = it.at ? String(it.at).slice(0, 10) : '日期未知';
+  return `- [${bank}] ${d}｜${String(it.text).slice(0, 160)}`;
+}
+
+tools.register({
+  name: 'deep_memory',
+  desc: '查看/检索你的深层记忆库（Hindsight 语义记忆服务——与策展记忆分开的第二套长期记忆，每轮对话自动检索注入的【深层记忆】块就是它）。用户问「你记了什么/最近记了几条/不同项目各记了什么/记忆服务正不正常」时用本工具如实作答，查到什么说什么、查不到就说查不到，绝不编造。action=status 看服务健康与各库概况；action=list 列最近条目（bank=all 跨库各取最新，适合「不同项目/不同库的记忆」类问题）；action=search 按语义检索。hermes-* 是其他项目的库：只读、不可写；写入只能经 save_memory',
+  params: {
+    action: 'string status=服务与各库概况/list=列最近条目/search=语义检索（三者选一）',
+    bank: 'string 可选：记忆库 id。缺省自己的 deskpal-tito；list 可填 all=跨库各取最新一条（按时间倒序凑满 limit）。可读库以 status 回执中标 ✓ 的为准',
+    query: 'string search 必填：检索词（用自然语言描述要找的记忆内容）',
+    limit: 'string 可选：list/search 返回条数 1-10，默认 5',
+  },
+  permission: 'read',
+  enabled: true,
+  handler: async (args) => {
+    const action = String(args.action || 'status').trim().toLowerCase();
+    const limit = Math.min(10, Math.max(1, Math.round(+args.limit) || 5));
+    const banks = hindsight.readBanks();
+
+    if (action === 'status') {
+      const h = await hindsight.health();
+      if (!h) return `[deep_memory|status] ${HS_DOWN_HINT}`;
+      const b = await hindsight.listBanks();
+      const st = hindsight.status();
+      const lines = [
+        `[deep_memory|status] 深层记忆链路：代理 ${h.proxy === 'ok' ? '正常' : '异常'}｜上游 hindsight-api ${h.upstream === 'ok' ? '正常' : '不可达'}｜L2 语义过滤 ${h.l2 === 'ok' ? '正常' : '降级（仅剩正则防线）'}`,
+        `桥接层：连续失败 ${st.failCount} 次｜最后成功 ${st.lastOkAt || '无'}｜最后失败 ${st.lastFailAt || '无'}`,
+      ];
+      if (b.ok) {
+        lines.push('记忆库（写入只允许 deskpal-tito；✓=本工具可读）：');
+        for (const x of b.banks) lines.push(`- ${x.id}｜${x.factCount != null ? x.factCount + ' 条' : '条数未知'}｜最后写入 ${x.lastWriteAt ? String(x.lastWriteAt).slice(0, 19).replace('T', ' ') : '未知'}${banks.includes(x.id) ? '｜✓可读' : ''}`);
+        const missing = banks.filter(id => !b.banks.some(x => x.id === id));
+        if (missing.length) lines.push(`（配置了可读但服务端不存在的库：${missing.join('、')}——如实转述，不要替它编内容）`);
+      } else {
+        lines.push(`记忆库清单获取失败：${b.error}${b.down ? '（服务疑似未运行）' : ''}`);
+      }
+      lines.push('以上数字如实引用，不要四舍五入或估造；本动作只读不写。');
+      return lines.join('\n');
+    }
+
+    if (action === 'list') {
+      let bank = String(args.bank || '').trim();
+      if (!bank) bank = banks.includes('deskpal-tito') ? 'deskpal-tito' : banks[0];
+      if (bank === 'all' || bank === '全部' || bank === '*') {
+        const rows = (await Promise.all(banks.map(async (bk) => {
+          const r = await hindsight.listMemories(bk, 1);
+          return r.ok && r.items[0] ? { bank: bk, ...r.items[0] } : null;
+        }))).filter(Boolean)
+          .sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))
+          .slice(0, limit);
+        if (!rows.length) return `[deep_memory|list|跨库] 可读库（${banks.join('、')}）都取不到干净条目（库为空、服务报错或全被敏感过滤）。如实告知，不要编造`;
+        return `[deep_memory|list|跨库·每库最新1条] 可读库：${banks.join('、')}\n${rows.map(r => hsRow(r.bank, r)).join('\n')}\n（只读展示；hermes-* 是其他项目的库，只读不可写）`;
+      }
+      if (!banks.includes(bank)) return `[deep_memory|list] 库「${bank}」不在可读清单（${banks.join('、')}）。如实告知用户；想看不在清单里的库，让他改 config/hindsight.json 的 readBanks；写入只允许 deskpal-tito`;
+      const r = await hindsight.listMemories(bank, limit);
+      if (!r.ok) return `[deep_memory|list|${bank}] 获取失败：${r.error}。${r.down ? HS_DOWN_HINT : '请把错误原样转述给用户'}`;
+      if (!r.items.length) return `[deep_memory|list|${bank}] 该库没有可展示的干净条目（空库或全被敏感过滤）。如实告知，不要编造`;
+      return `[deep_memory|list|${bank}|最近${r.items.length}条]\n${r.items.map(it => hsRow(bank, it)).join('\n')}`;
+    }
+
+    if (action === 'search') {
+      const query = String(args.query || '').trim();
+      if (!query) throw new Error('search 必须提供 query（用自然语言描述要找的记忆内容）');
+      let bank = String(args.bank || '').trim();
+      if (!bank) bank = banks.includes('deskpal-tito') ? 'deskpal-tito' : banks[0];
+      if (!banks.includes(bank)) return `[deep_memory|search] 库「${bank}」不在可读清单（${banks.join('、')}）。如实告知用户`;
+      const r = await hindsight.searchMemories(query, bank, limit);
+      if (!r.ok) return `[deep_memory|search|${bank}] 检索失败：${r.error}。${r.down ? HS_DOWN_HINT : '请把错误原样转述给用户'}`;
+      if (!r.items.length) return `[deep_memory|search|${bank}|「${query.slice(0, 40)}」] 没有检索到相关条目。如实告知，不要为了回答而编造记忆`;
+      // searchMemories 返回纯文本条目（与自动召回注入同格式），无日期字段
+      return `[deep_memory|search|${bank}|「${query.slice(0, 40)}」|${r.items.length}条]\n${r.items.map(t => `- [${bank}] ${String(t).slice(0, 160)}`).join('\n')}\n（结果经 8890 过滤代理，敏感条目已被滤除）`;
+    }
+
+    throw new Error(`action 必须是 status / list / search 之一，收到的是「${action}」。本工具只读；写入记忆用 save_memory`);
+  },
+});
+
 // noreki_send：NOREKI-Mail 发信（v1.5.1，TTR-0JQC45-R1 验收提出的结构性缺口——
 // 「发信侧在我这边还没有落点」）。给缇托的 agent 一个真实发信通道：签名、落 outbox、
 // 写 sent 账本全在 services/noreki-link 内完成。仅戏外工作轮下发（同 add_reminder，
@@ -201,7 +289,7 @@ tools.register({
 // 固定 clio@hermes（本工具不发第三方）。
 tools.register({
   name: 'noreki_send',
-  desc: '给克莉奥（clio@hermes，Hermes 侧的女儿 bot）发一封 NOREKI-Mail 信件。用户在戏外工作轮要求「给克莉奥带话/回信给女儿/告诉克莉奥…」时必须实际调用本工具。信件会经 HMAC 签名落进 D:/NorekiLink 邮局，对方领取后其账本出现未读。正文用信件语气，首行是主题句（账本按首行截 48 字作摘要）',
+  desc: '给克莉奥（clio@hermes，Hermes 侧的女儿 bot）发一封 NOREKI-Mail 信件。用户在戏外工作轮要求「给克莉奥带话/回信给女儿/告诉克莉奥…」时必须实际调用本工具。信件会经 HMAC 签名落进本机 NOREKI-Mail 邮局目录（NOREKI_LINK_ROOT），对方领取后其账本出现未读。正文用信件语气，首行是主题句（账本按首行截 48 字作摘要）',
   params: {
     body: 'string 信件正文。首行即主题（会被截为 48 字摘要入双方账本）；正文建议 ≤500 字，一事一信',
     kind: 'string 可选：note=平信（默认）/reply=回信/notify=通知。回信时必须给 ref',
@@ -265,7 +353,7 @@ tools.register({
 // read_file 段内自截且带续读标记，上限放宽到能容纳满段；web_search 返回体自截（§5.5），
 // 预留引号/转义余量；其余工具保持保护性 4000。
 // read_image 走 loop 专用通道（imagePart 注入 user 消息），jstr 只见到短回执文本，默认 4000 足够。
-tools.RESULT_CAPS = { read_file: 40000, web_search: 12000 };
+tools.RESULT_CAPS = { read_file: 40000, web_search: 12000, deep_memory: 8000 };
 
 // web_search：联网检索出口的唯一接口（spec §5）。工具常下发（quick 管线无 agent 段天然不含），
 // 开关/授权/轨道/日限/冷却闸全部在 handler 内（§5.2 决策表），loop 不做过滤。

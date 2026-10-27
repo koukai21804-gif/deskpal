@@ -1,6 +1,6 @@
 {
   "name": "deskpal",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "桌面宠物：角色扮演 / 书籍陪读 / 时间管理 / 日程提醒 / Agent 执行管线",
   "license": "MIT",
   "author": "deskpal",
@@ -22,10 +22,11 @@
     "test:tool-compact": "node scripts/test-tool-compact.js",
     "test:read-image": "node scripts/test-read-image.js",
     "test:tokenboard": "node scripts/test-tokenboard.js",
-    "test": "node scripts/test-fs-guard.js && node scripts/test-ui-tokens.js && node scripts/test-avatar.js && node scripts/test-agent.js && node scripts/test-agent-e2e.js && node scripts/test-read-image.js && node scripts/test-vision-capture.js && node scripts/test-context.js && node scripts/test-memory.js && node scripts/test-sessions.js && node scripts/test-demo-mode.js && node scripts/test-tool-compact.js && node scripts/test-video.js && node scripts/test-tokenboard.js",
+    "test": "node scripts/test-fs-guard.js && node scripts/test-ui-tokens.js && node scripts/test-avatar.js && node scripts/test-agent.js && node scripts/test-agent-e2e.js && node scripts/test-read-image.js && node scripts/test-vision-capture.js && node scripts/test-i18n.js && node scripts/test-context.js && node scripts/test-memory.js && node scripts/test-sessions.js && node scripts/test-demo-mode.js && node scripts/test-tool-compact.js && node scripts/test-video.js && node scripts/test-tokenboard.js && node scripts/test-deep-memory.js",
     "test:video": "node scripts/test-video.js",
     "test:vision-capture": "node scripts/test-vision-capture.js",
-    "test:demo-mode": "node scripts/test-demo-mode.js"
+    "test:demo-mode": "node scripts/test-demo-mode.js",
+    "test:deep-memory": "node scripts/test-deep-memory.js"
   },
   "dependencies": {
     "dayjs": "^1.11.10",

@@ -1,6 +1,7 @@
 // 视频解析（陪读视频源）：B站/YouTube 走 yt-dlp（字幕优先，无字幕下音频），MP4 直链走 fetch，
 // 本地视频走文件；音频统一经 ffmpeg 转 16k 单声道 mp3 后送 OpenAI 兼容 /audio/transcriptions 转文字。
 // 管线参照 Paper2Galgame 的 videoParsing（字幕语言优先级 / 音频码率 20kbps / 时长-体积上限 / VTT 解析）。
+const i18n = require('./i18n');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -430,8 +431,8 @@ async function parseVideo({ url, filePath }, { onProgress = null, signal = null 
     let mediaPath = null, meta = { title: '', uploader: '', durationSeconds: 0, platform: '', url: '' };
     // 工具按需探测：本地/直链只要 ffmpeg；B站/YouTube 要 yt-dlp（抓到字幕则全程用不到 ffmpeg）
     let ffmpegPath = null, ytDlpPath = null;
-    const getFfmpeg = async () => { if (!ffmpegPath) { prog('probe', 5, '正在检查 ffmpeg…'); ffmpegPath = await requireBinary('ffmpeg'); } return ffmpegPath; };
-    const getYtDlp = async () => { if (!ytDlpPath) { prog('probe', 5, '正在检查 yt-dlp…'); ytDlpPath = await requireBinary('ytDlp'); } return ytDlpPath; };
+    const getFfmpeg = async () => { if (!ffmpegPath) { prog('probe', 5, i18n.t('正在检查 ffmpeg…')); ffmpegPath = await requireBinary('ffmpeg'); } return ffmpegPath; };
+    const getYtDlp = async () => { if (!ytDlpPath) { prog('probe', 5, i18n.t('正在检查 yt-dlp…')); ytDlpPath = await requireBinary('ytDlp'); } return ytDlpPath; };
 
     if (local) {
       const st = await fs.promises.stat(filePath).catch(() => null);
@@ -441,50 +442,50 @@ async function parseVideo({ url, filePath }, { onProgress = null, signal = null 
       mediaPath = filePath;
       meta.platform = 'local';
       meta.title = path.basename(filePath, path.extname(filePath)) || '本地视频';
-      prog('probe', 10, '正在读取视频时长…');
+      prog('probe', 10, i18n.t('正在读取视频时长…'));
       meta.durationSeconds = await probeDuration(filePath, await getFfmpeg(), mergedSignal);
     } else if (normalizeVideoSource(url).platform === 'direct') {
       meta = { ...meta, ...normalizeVideoSource(url) };
-      prog('download', 10, '正在下载 MP4…');
+      prog('download', 10, i18n.t('正在下载 MP4…'));
       mediaPath = path.join(tempDir, 'direct.mp4');
-      await downloadDirect(meta.url, mediaPath, { signal: mergedSignal, onProgress: p => prog('download', 10 + Math.round(p * 30), `正在下载 MP4… ${Math.round(p * 100)}%`) });
-      prog('probe', 42, '正在读取视频时长…');
+      await downloadDirect(meta.url, mediaPath, { signal: mergedSignal, onProgress: p => prog('download', 10 + Math.round(p * 30), i18n.tf('正在下载 MP4… {0}%', Math.round(p * 100))) });
+      prog('probe', 42, i18n.t('正在读取视频时长…'));
       meta.durationSeconds = await probeDuration(mediaPath, await getFfmpeg(), mergedSignal);
       meta.title = meta.title || decodeURIComponent(path.basename(new URL(meta.url).pathname)) || 'MP4 视频';
     } else {
       meta = { ...meta, ...normalizeVideoSource(url) };
-      prog('metadata', 8, '正在读取视频信息…');
+      prog('metadata', 8, i18n.t('正在读取视频信息…'));
       const md = await ytdlpMetadata(meta.url, await getYtDlp(), mergedSignal);
       meta.title = md.title; meta.uploader = md.uploader; meta.durationSeconds = md.durationSeconds;
       if (meta.durationSeconds > MAX_DURATION_SECONDS) {
         throw friendlyError(`视频时长 ${fmtTs(meta.durationSeconds)} 超过 2 小时限制`);
       }
-      prog('subtitles', 18, '正在尝试抓取字幕（优先，免转写）…');
+      prog('subtitles', 18, i18n.t('正在尝试抓取字幕（优先，免转写）…'));
       let cues = [];
       try { cues = await ytdlpSubtitles({ url: meta.url, tempDir, ytDlpPath: await getYtDlp(), signal: mergedSignal }); }
       catch (e) { if (mergedSignal.aborted) throw friendlyError('视频解析已取消'); logger.warn('[video] 字幕抓取失败: ' + (e.message || e)); }
       if (cues.length) {
         const totalChars = cues.reduce((n, c) => n + c.text.length, 0);
         if (totalChars >= 200) {
-          prog('done', 95, '字幕抓取成功，正在整理文稿…');
+          prog('done', 95, i18n.t('字幕抓取成功，正在整理文稿…'));
           const markdown = buildTranscriptMarkdown({ ...meta, sections: bucketCues(cues, 300, meta.durationSeconds) });
           return finish({ markdown, meta, transcriptSource: 'subtitles' });
         }
       }
-      prog('download', 35, '没有可用字幕，正在下载音频（将语音转写）…');
-      mediaPath = await ytdlpAudio({ url: meta.url, tempDir, ytDlpPath: await getYtDlp(), signal: mergedSignal, onProgress: p => prog('download', 35 + Math.round(p * 20), `正在下载音频… ${Math.round(p * 100)}%`) });
+      prog('download', 35, i18n.t('没有可用字幕，正在下载音频（将语音转写）…'));
+      mediaPath = await ytdlpAudio({ url: meta.url, tempDir, ytDlpPath: await getYtDlp(), signal: mergedSignal, onProgress: p => prog('download', 35 + Math.round(p * 20), i18n.tf('正在下载音频… {0}%', Math.round(p * 100))) });
     }
 
     // 音频 → ASR（本地/直链/无字幕的在线视频共用）
     if (meta.durationSeconds > MAX_DURATION_SECONDS) {
       throw friendlyError(`视频时长 ${fmtTs(meta.durationSeconds)} 超过 2 小时限制`);
     }
-    prog('extract', 60, '正在提取音轨（16k 单声道）…');
+    prog('extract', 60, i18n.t('正在提取音轨（16k 单声道）…'));
     const audio = await extractAudio({ mediaPath, tempDir, ffmpegPath: await getFfmpeg(), maxDurationSeconds: MAX_DURATION_SECONDS, signal: mergedSignal });
-    prog('transcribe', 72, '正在语音转写（可能需要几分钟）…');
+    prog('transcribe', 72, i18n.t('正在语音转写（可能需要几分钟）…'));
     const text = await transcribeFile(audio, { signal: mergedSignal });
     const sections = [{ startSeconds: 0, endSeconds: meta.durationSeconds || 0, text }];
-    prog('done', 95, '转写完成，正在整理文稿…');
+    prog('done', 95, i18n.t('转写完成，正在整理文稿…'));
     return finish({ markdown: buildTranscriptMarkdown({ ...meta, sections }), meta, transcriptSource: 'asr' });
   } catch (e) {
     if (mergedSignal.aborted && (!e.userMsg || e.userMsg === '视频解析已取消')) throw friendlyError('视频解析已取消');

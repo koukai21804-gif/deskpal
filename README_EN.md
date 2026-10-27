@@ -4,7 +4,7 @@ English | [中文](./README.md)
 
 A Windows desktop pet application (Electron): an AI companion that lives on your desktop — roleplay chat, **AI agent file tasks**, book co-reading, time tracking, smart schedule reminders, and a local quick launcher.
 
-The built-in default character is **Titor Noreiji** — a knowledgeable, mildly socially-anxious AI prodigy girl (long lavender hair with cat-ear bone-conduction headphones) who ships with 6 expression sprites. Every persona field is editable, you can upload your own sprite images, and multiple pet profiles can be saved, switched, and shared as `.pet.json` files.
+The built-in default character is **Titor Knowledge** — a knowledgeable, mildly socially-anxious AI prodigy girl (long lavender hair with cat-ear bone-conduction headphones) who ships with 6 expression sprites. Every persona field is editable, you can upload your own sprite images, and multiple pet profiles can be saved, switched, and shared as `.pet.json` files.
 
 <p align="center">
   <img src="resources/icon-256.png" width="128" alt="deskpal icon">
@@ -92,5 +92,5 @@ Electron 31 · vanilla JS (no frontend framework) · koffi (FFI window tracking)
 ## 📄 License
 
 - Source code: [MIT](./LICENSE)
-- The built-in character artwork of "Titor Noreiji" (sprites, background, default profile, app icons): Copyright (c) 2026 the deskpal author, registered as an artwork of visual art, and **NOT covered by the MIT license**. It is distributed with this project for personal, non-commercial use; standalone redistribution, commercial use and derivative works require prior permission — see the [Character Artwork License](./ART-LICENSE.md)
+- The built-in character artwork of "Titor Knowledge" (sprites, background, default profile, app icons): Copyright (c) 2026 the deskpal author, registered as an artwork of visual art, and **NOT covered by the MIT license**. It is distributed with this project for personal, non-commercial use; standalone redistribution, commercial use and derivative works require prior permission — see the [Character Artwork License](./ART-LICENSE.md)
 - Please also follow the terms of your LLM provider

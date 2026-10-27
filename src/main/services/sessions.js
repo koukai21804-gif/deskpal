@@ -8,6 +8,7 @@
 //   · 本模块只碰数据形状，不碰 LLM/计时器——切会话时的 flush 编排在 chat.js。
 const fs = require('fs');
 const path = require('path');
+const i18n = require('./i18n');
 const dayjs = require('dayjs');
 const store = require('./store');
 const logger = require('../logger');
@@ -86,7 +87,7 @@ function create({ name, goal } = {}) {
   const n = doc.sessions.filter(s => s.kind !== 'main').length + 1;
   const sess = {
     id: newId(),
-    name: String(name || '').trim().slice(0, 24) || `专项会话 ${n}`,
+    name: String(name || '').trim().slice(0, 24) || i18n.tf('专项会话 {0}', n),
     kind: 'task',
     goal: String(goal || '').trim().slice(0, 120),
     messages: [], userCountSince: 0, lastExtractAt: null,

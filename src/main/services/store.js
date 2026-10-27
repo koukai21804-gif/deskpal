@@ -62,6 +62,9 @@ const DEFAULTS = {
     recallK: 6,
     recallTimeoutMs: 8000,  // hindsight recall 实测 3-8s（四路检索+GPU 重排），1.2s 必然超时（M4 实测修正）
     autoPrompt: true,
+    // 跨库只读白名单（v0.6.3，deep_memory 工具）：写入永远只进 bank，不受本清单影响；
+    // hermes-* 是同一记忆服务里其他项目的库，只读不写；_canary/_eval（心跳/评测库）不入默认清单防噪声
+    readBanks: ['deskpal-tito', 'hermes-main', 'hermes-clio'],
   },
   // 人格三层结构（v0.4.0-dev.5，TITOR-CANON v1.0）：
   //   canon = 锁层（L1 身份锚 / L2 关系定义 / L3 三铁律+禁忌 / L4 语言签名）——

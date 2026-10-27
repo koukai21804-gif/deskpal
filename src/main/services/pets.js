@@ -9,6 +9,7 @@ const { dialog } = require('electron');
 const store = require('./store');
 const canon = require('./canon');
 const windows = require('../windows');
+const i18n = require('./i18n');
 
 const EMOTION_KEYS = ['normal', 'happy', 'surprised', 'angry', 'thinking', 'sad'];
 const EXT_MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
@@ -30,7 +31,7 @@ function list() {
 
 function findProfile(id) {
   const p = (store.get('pets').profiles || []).find(x => x.id === id);
-  if (!p) throw friendlyError('档案不存在或已被删除');
+  if (!p) throw friendlyError(i18n.t('档案不存在或已被删除'));
   return p;
 }
 
@@ -92,9 +93,9 @@ async function exportProfile(id) {
     }
   }
   const { canceled, filePath } = await dialog.showSaveDialog({
-    title: '导出宠物设定',
+    title: i18n.t('导出宠物设定'),
     defaultPath: `${p.name.replace(/[\\/:*?"<>|]/g, '_')}.pet.json`,
-    filters: [{ name: 'deskpal 宠物设定', extensions: ['json'] }],
+    filters: [{ name: i18n.t('deskpal 宠物设定'), extensions: ['json'] }],
   });
   if (canceled || !filePath) return null;
   fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
@@ -106,8 +107,8 @@ async function importProfile(filePath) {
   let src = filePath;
   if (!src) {
     const r = await dialog.showOpenDialog({
-      title: '导入宠物设定',
-      filters: [{ name: 'deskpal 宠物设定', extensions: ['json'] }],
+      title: i18n.t('导入宠物设定'),
+      filters: [{ name: i18n.t('deskpal 宠物设定'), extensions: ['json'] }],
       properties: ['openFile'],
     });
     if (r.canceled || !r.filePaths.length) return null;
@@ -115,10 +116,10 @@ async function importProfile(filePath) {
   }
   let j;
   try { j = JSON.parse(fs.readFileSync(src, 'utf8')); }
-  catch (_) { throw friendlyError('文件不是合法的 JSON'); }
+  catch (_) { throw friendlyError(i18n.t('文件不是合法的 JSON')); }
   const hasPersona = j && j.type === 'pet-profile' && j.persona && (j.persona.canon || j.persona.pet);
   if (!hasPersona) {
-    throw friendlyError('不是有效的 deskpal 宠物设定文件（需要 .pet.json，v1/v2 均可）');
+    throw friendlyError(i18n.t('不是有效的 deskpal 宠物设定文件（需要 .pet.json，v1/v2 均可）'));
   }
   const layeredPersona = canon.normalizePersona(j.persona); // v1 单层 → 分层；v2 原样归一化
   // R6（risk note）：v1 单层文件没有宪法概念，canon 由 TITOR-CANON 默认内容兜底——
@@ -127,10 +128,10 @@ async function importProfile(filePath) {
   if (!j.persona.canon && dialog && typeof dialog.showMessageBox === 'function') {
     const { canceled: no } = await dialog.showMessageBox({
       type: 'question',
-      title: '导入 v1 单层设定',
-      message: `「${String(j.name || '未命名').slice(0, 20)}」是 v1 单层结构文件`,
-      detail: '分层结果预览：\n· canon 宪法（L1–L4）将以 TITOR-CANON v1.0 默认内容兜底，名字沿用旧档\n· ops 表现层（外貌/口头禅/表层性格等）原样保留旧档内容\n· 导入后可在人设页查看，宪法修改走批准通道\n\n确认导入？',
-      buttons: ['确认导入', '取消'],
+      title: i18n.t('导入 v1 单层设定'),
+      message: i18n.tf('「{0}」是 v1 单层结构文件', String(j.name || '未命名').slice(0, 20)),
+      detail: i18n.t('分层结果预览：\n· canon 宪法（L1–L4）将以 TITOR-CANON v1.0 默认内容兜底，名字沿用旧档\n· ops 表现层（外貌/口头禅/表层性格等）原样保留旧档内容\n· 导入后可在人设页查看，宪法修改走批准通道\n\n确认导入？'),
+      buttons: [i18n.t('确认导入'), i18n.t('取消')],
       defaultId: 0,
       cancelId: 1,
     });
@@ -153,7 +154,7 @@ async function importProfile(filePath) {
 
   const d = store.get('pets');
   let name = String(j.name || '导入的设定').slice(0, 20);
-  if ((d.profiles || []).some(x => x.name === name)) name = name + ' (导入)';
+  if ((d.profiles || []).some(x => x.name === name)) name = name + ' ' + i18n.t('(导入)');
   d.profiles.push({
     id: newId(), name, persona: layeredPersona,
     sprites,

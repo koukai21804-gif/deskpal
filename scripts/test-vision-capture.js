@@ -153,6 +153,79 @@ section('③ look_screen：视觉能力闸 + 双轨授权');
   ok(r.ok === false && /全黑帧/.test(r.error), '黑帧失败如实透传');
 }
 
+// ============ ③½ 多屏选屏（v0.6.4）：别称解析 + 布局清单 + 回执带选屏语境 ============
+section('③½ 多屏选屏：序号/别称解析、布局清单、回执与授权卡带屏语境');
+{
+  const D = (id, x, y, w, h, sf) => ({ id, bounds: { x, y, width: w, height: h }, size: { width: w, height: h }, scaleFactor: sf || 1 });
+  const P = 100; // 主屏 display id（故意排在输入数组第二位，验证主屏优先重排）
+
+  // parseScreenArg：缺省/数字/别称/非法
+  eq(vc.parseScreenArg(undefined).kind, 'default', 'parse：缺省 → default');
+  eq(vc.parseScreenArg('  ').kind, 'default', 'parse：空白串 → default');
+  eq(vc.parseScreenArg('1').kind, 'number', 'parse：数字串 → number');
+  eq(vc.parseScreenArg('2.4').n, 2, 'parse：小数四舍五入');
+  eq(vc.parseScreenArg(-1).n, -1, 'parse：负数保留（交给范围校验拒）');
+  eq(vc.parseScreenArg('主屏').kind, 'primary', 'parse：主屏别称');
+  eq(vc.parseScreenArg('PRIMARY').kind, 'primary', 'parse：primary 不分大小写');
+  eq(vc.parseScreenArg('副屏').kind, 'secondary', 'parse：副屏别称');
+  eq(vc.parseScreenArg('右边').kind, 'invalid', 'parse：方位词不猜序号（invalid）');
+
+  // screenArgLabel：授权卡 scopePaths 展示口径
+  eq(vc.screenArgLabel(undefined), '0', 'label：缺省 → 0');
+  eq(vc.screenArgLabel('主屏'), '0', 'label：主屏 → 0');
+  eq(vc.screenArgLabel('副屏'), '1', 'label：副屏 → 1');
+  eq(vc.screenArgLabel(3), '3', 'label：数字原样');
+  eq(vc.screenArgLabel('右边'), '右边', 'label：解析不了原样展示');
+
+  // resolveScreenIndex：缺省主屏 / 序号 / 别称 / 超界带布局 / 多屏副屏指代不明
+  const dual = [D(200, 2560, 0, 1920, 1080), D(P, 0, 0, 2560, 1440)];
+  eq(vc.resolveScreenIndex(undefined, dual, P).idx, 0, 'resolve：缺省 → 主屏（0）');
+  eq(vc.resolveScreenIndex('1', dual, P).idx, 1, 'resolve：screen=1 → 副屏（乱序输入按主屏优先重排）');
+  eq(vc.resolveScreenIndex(' 主屏 ', dual, P).idx, 0, 'resolve：「主屏」带空白 → 0');
+  eq(vc.resolveScreenIndex('primary', dual, P).idx, 0, 'resolve：primary → 0');
+  eq(vc.resolveScreenIndex('副屏', dual, P).idx, 1, 'resolve：双屏时「副屏」→ 1（无歧义）');
+  let out = vc.resolveScreenIndex('5', dual, P);
+  ok(out.error && /超出范围/.test(out.error) && /共 2 块屏/.test(out.error), 'resolve：序号超界拒绝并报屏数');
+  ok(/#0 主屏 2560×1440/.test(out.error) && /#1 1920×1080（主屏右侧）/.test(out.error), 'resolve：超界报错带完整布局清单（一次失败即可自纠）');
+  ok(vc.resolveScreenIndex(-1, dual, P).error, 'resolve：负数序号拒绝');
+  const tri = [D(300, 0, 1440, 1920, 1080), D(P, 0, 0, 2560, 1440), D(400, 2560, 1440, 1920, 1080)];
+  out = vc.resolveScreenIndex('副屏', tri, P);
+  ok(out.error && /指代不明/.test(out.error), 'resolve：三屏时「副屏」指代不明被拒（要求用序号）');
+  ok(vc.resolveScreenIndex('右边', dual, P).error, 'resolve：无法识别的指代被拒');
+  eq(vc.resolveScreenIndex(undefined, dual, P).layout, '#0 主屏 2560×1440｜#1 1920×1080（主屏右侧）', 'resolve：随解析带出布局清单');
+
+  // displayLayout：物理分辨率（scaleFactor 还原）与相对主屏方位（横/纵/斜向/负坐标）
+  eq(vc.displayLayout(dual, P), '#0 主屏 2560×1440｜#1 1920×1080（主屏右侧）', 'layout：主屏优先 + 方位标注');
+  eq(vc.displayLayout([D(P, 0, 0, 1920, 1080)], P), '#0 主屏 1920×1080', 'layout：单屏只有主屏一行');
+  eq(vc.displayLayout([D(P, 0, 0, 1920, 1080), D(9, -1920, 0, 1920, 1080)], P), '#0 主屏 1920×1080｜#1 1920×1080（主屏左侧）', 'layout：左侧屏（负坐标）');
+  eq(vc.displayLayout([D(P, 0, 0, 1920, 1080), D(9, -1920, -1080, 1920, 1080)], P), '#0 主屏 1920×1080｜#1 1920×1080（主屏左上方）', 'layout：斜向方位（左上方）');
+  eq(vc.displayLayout([D(P, 0, 0, 2560, 1440), D(9, 640, -1200, 1920, 1080, 2)], P), '#0 主屏 2560×1440｜#1 3840×2160（主屏上方）', 'layout：上方屏 + 物理分辨率按 scaleFactor 还原');
+
+  // 工具集成：授权卡 scopePaths 按别称归一；回执带布局与选屏提示
+  store.set('settings', { agent: { visionCapture: { screenEnabled: false } } });
+  permDecision = 'allow_once'; permCalls = [];
+  await tools.invoke('look_screen', { screen: '副屏', track: 'designated', reason: '用户让我看副屏' }, CTX);
+  ok(permCalls.length === 1 && permCalls[0].scopePaths[0] === 'screen:1', '开启卡 scopePaths：「副屏」归一为屏序 1');
+
+  store.set('settings', { agent: { visionCapture: { screenEnabled: true } } });
+  vc.captureScreen = async ({ index } = {}) => ({ ok: true, buf: STUB_PNG, mime: 'image/png', width: 2560, height: 1440, resized: false, screens: 2, index: Number.isFinite(+index) ? +index : 0, isPrimary: (+index || 0) === 0, layout: '#0 主屏 2560×1440｜#1 1920×1080（主屏右侧）', foreground: '记事本', selfExcluded: 1, warnings: [], stats: { mean: [1, 1, 1], stddev: [1, 1, 1] } });
+  let rr = await tools.invoke('look_screen', { track: 'designated', reason: '看看屏幕' }, CTX);
+  ok(rr.ok && /共 2 块屏，布局：#0 主屏 2560×1440｜#1 1920×1080（主屏右侧）/.test(rr.text), '多屏回执带布局清单（模型由此可翻译方位指代）');
+  ok(rr.ok && /用 screen 参数按布局选序号/.test(rr.text), '未指定屏：回执附选屏提示');
+  ok(rr.meta.layout === '#0 主屏 2560×1440｜#1 1920×1080（主屏右侧）' && rr.meta.screens === 2, 'meta 带布局与屏数');
+  rr = await tools.invoke('look_screen', { screen: 1, track: 'designated', reason: '看看副屏' }, CTX);
+  ok(rr.ok && !/用 screen 参数按布局选序号/.test(rr.text) && /第 1 块屏/.test(rr.text), '指定屏后不再提示；序号照常透传');
+  rr = await tools.invoke('look_screen', { screen: '主屏', track: 'designated', reason: '看主屏' }, CTX);
+  ok(rr.ok && /第 0 块屏（主屏）/.test(rr.text), '「主屏」别称照常工作');
+  vc.captureScreen = async () => ({ ok: false, error: '屏幕序号超出范围：本机共 2 块屏（0–1，0=主屏）。当前布局：#0 主屏 2560×1440｜#1 1920×1080（主屏右侧）——用户指代方位（如「右边的屏」）时按布局选对序号再调' });
+  rr = await tools.invoke('look_screen', { screen: 9, reason: '看看' }, CTX);
+  ok(rr.ok === false && /布局/.test(rr.error), '超界错误（含布局）如实透传');
+
+  // schema 提示面：模型要知道能选屏、怎么选
+  ok(/0=主屏/.test(tools.get('look_screen').params.screen) && /主屏\/primary/.test(tools.get('look_screen').params.screen), 'schema screen 参数说明序号与别称');
+  ok(/多显示器/.test(tools.get('look_screen').desc) && /布局清单/.test(tools.get('look_screen').desc), 'desc 提及多显示器选屏与布局清单');
+}
+
 // ============ ④ look_camera：逐次授权 + 拒绝冷却 ============
 section('④ look_camera：camera_sensitive（逐次卡 + 拒后 60s 冷却）');
 {
@@ -247,9 +320,9 @@ section('⑥ loop 集成：下发面与图像消息注入');
   names = await runOnce('/order 看看屏幕上是什么');
   ok(names.includes('look_screen') && names.includes('look_camera') && names.includes('read_image') && names.includes('look_user_avatar'), '有视觉能力：视觉工具族齐发');
 
-  // 戏内轮（未打标）：只有白名单五件（web_search/save_memory/look_screen/look_camera/look_user_avatar）
+  // 戏内轮（未打标）：只有白名单六件（web_search/save_memory/look_screen/look_camera/look_user_avatar/deep_memory）
   names = await runOnce('帮我看看屏幕上这个报错是什么');
-  eq(names, ['look_camera', 'look_screen', 'look_user_avatar', 'save_memory', 'web_search'], '戏内轮工具面 = 白名单五件（含「眼睛」与用户头像）');
+  eq(names, ['deep_memory', 'look_camera', 'look_screen', 'look_user_avatar', 'save_memory', 'web_search'], '戏内轮工具面 = 白名单六件（含「眼睛」、用户头像与深层记忆只读面）');
 
   // 全链路：look_screen 执行 → 图像以 user 消息注入（read_image 同款通道）
   store.set('settings', { agent: { visionCapture: { screenEnabled: true } } });

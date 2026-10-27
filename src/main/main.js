@@ -3,6 +3,7 @@ const { app, Tray, Menu, nativeImage, dialog } = require('electron');
 const path = require('path');
 const logger = require('./logger');
 const store = require('./services/store');
+const i18n = require('./services/i18n');
 const windows = require('./windows');
 const registerIpc = require('./ipc');
 
@@ -51,7 +52,7 @@ if (!gotLock) {
     createTray();
     windows.openWindow('pet');
 
-    // NOREKI-Mail：跨实体信件通道（titor@deskpal ⇄ clio@hermes），协议见 D:/NorekiLink/PROTOCOL.md
+    // NOREKI-Mail：跨实体信件通道（titor@deskpal ⇄ clio@hermes），协议见邮局根目录（NOREKI_LINK_ROOT）下的 PROTOCOL.md
     try {
       const linkInit = require('./services/noreki-link').init(dataDir);
       if (linkInit.ok) logger.info('[noreki-link] 通道就绪（titor@deskpal）');
@@ -59,13 +60,13 @@ if (!gotLock) {
     } catch (e) { logger.error('[noreki-link] 初始化失败: ' + e.message); }
 
     // Hindsight 语义记忆服务：启动探测 → 未运行则弹窗询问（用户提示式开关，评审 §7.2；不做开机自启）。
-    // 「不再提示」写入 config/hindsight.json；启动动作 spawn hindsight-service.bat（D:\hindsight）。
+    // 「不再提示」写入 config/hindsight.json；启动动作 spawn Hindsight 安装目录下的 hindsight-service.bat。
     try {
       const hindsight = require('./services/hindsight-bridge');
       hindsight.startupCheck().then(async (chk) => {
         if (!chk.prompt) return;
         const { Notification } = require('electron');
-        try { if (Notification.isSupported()) new Notification({ title: 'deskpal · 记忆服务未运行', body: 'Hindsight 语义记忆服务未启动，本次会话将没有深层记忆召回。' }).show(); } catch (_) {}
+        try { if (Notification.isSupported()) new Notification({ title: i18n.t('deskpal · 记忆服务未运行'), body: i18n.t('Hindsight 语义记忆服务未启动，本次会话将没有深层记忆召回。') }).show(); } catch (_) {}
         const r = await dialog.showMessageBox({
           type: 'question', title: 'deskpal · 记忆服务未运行',
           message: 'Hindsight 语义记忆服务未运行', buttons: ['立即启动', '本次跳过', '不再提示'],
@@ -82,7 +83,7 @@ if (!gotLock) {
           setTimeout(async () => {
             const up = await hindsight.isUp();
             logger.info('[hindsight] 启动复探: ' + (up ? 'ok' : '尚未就绪（双模型加载最长约 2 分钟）'));
-            if (up) { try { const { Notification } = require('electron'); if (Notification.isSupported()) new Notification({ title: 'deskpal', body: '语义记忆服务已就绪' }).show(); } catch (_) {} }
+            if (up) { try { const { Notification } = require('electron'); if (Notification.isSupported()) new Notification({ title: 'deskpal', body: i18n.t('语义记忆服务已就绪') }).show(); } catch (_) {} }
           }, 30000).unref();
         }
       }).catch((e) => logger.warn('[hindsight] startupCheck 失败: ' + e.message));
@@ -156,17 +157,17 @@ function trayTemplate() {
   const settings = store.get('settings');
   const commands = store.get('commands').commands || [];
   const items = [
-    { label: '💬 聊天', click: () => windows.openWindow('chat') },
-    { label: '📖 陪读', click: () => windows.openWindow('reader') },
-    { label: '⏱ 时间统计', click: () => windows.openWindow('time') },
-    { label: '📅 日程', click: () => windows.openWindow('schedule') },
-    { label: '⚙️ 设置', click: () => windows.openWindow('settings') },
+    { label: i18n.t('💬 聊天'), click: () => windows.openWindow('chat') },
+    { label: i18n.t('📖 陪读'), click: () => windows.openWindow('reader') },
+    { label: i18n.t('⏱ 时间统计'), click: () => windows.openWindow('time') },
+    { label: i18n.t('📅 日程'), click: () => windows.openWindow('schedule') },
+    { label: i18n.t('⚙️ 设置'), click: () => windows.openWindow('settings') },
     { type: 'separator' },
   ];
   if (commands.length) {
     const { runByCommand } = require('./services/launcher');
     items.push({
-      label: '🚀 快捷打开',
+      label: i18n.t('🚀 快捷打开'),
       submenu: commands.slice(0, 10).map(c => ({
         label: c.phrase + (c.missing ? '（路径失效）' : ''),
         click: () => runByCommand(c).catch(() => {}),

@@ -1,6 +1,7 @@
 // 全部 prompt 模板（函数即模板，中文）。字段为空自动省略对应行。
 const dayjs = require('dayjs');
 const store = require('./store');
+const i18n = require('./i18n');
 const llm = require('./llm');
 const runs = require('./agent/runs');
 const canon = require('./canon');
@@ -225,7 +226,7 @@ function agentSection() {
   const visionTool = llm.isVisionCapable()
     ? `
 - read_image(path)：读取图片文件（png/jpg/jpeg/gif/webp/bmp），图像会进入你的视觉上下文。识别、描述、提取截图/照片/扫描件/图表中的内容用它；文本文件用 read_file；超过 8MB 的图会被拒绝
-- look_screen(screen?, track, reason)：截取当前桌面画面进入你的视觉上下文。用户明确让你「看看屏幕/桌面上/屏幕上这个」时用；比喻性的「你看」不是截屏请求，此前看过的画面凭回忆不重复截。track：designated=用户明确要求（默认）/autonomous=你主动想看（须用户逐次批准）；reason 必填。默认关闭，首次调用会弹授权卡开启
+- look_screen(screen?, track, reason)：截取当前桌面画面进入你的视觉上下文。用户明确让你「看看屏幕/桌面上/屏幕上这个」时用；比喻性的「你看」不是截屏请求，此前看过的画面凭回忆不重复截。多显示器：screen=屏序（0=主屏，1=副屏…，也接受「主屏」，双屏时可填「副屏」）；不确定有几块屏/哪块在哪就直接调用，回执带屏幕布局清单（序号/分辨率/相对主屏方位），用户指代方位（「右边的屏」「副屏」）时对照布局选序号再截。track：designated=用户明确要求（默认）/autonomous=你主动想看（须用户逐次批准）；reason 必填。默认关闭，首次调用会弹授权卡开启
 - look_camera(camera?, reason)：开启摄像头拍一帧实景进入你的视觉上下文。仅用户明确要求「开摄像头看看我/镜头前…」时调用；每次都会先弹授权卡，拍完即关，不会持续观看
 - look_user_avatar()：读取用户（对话对象）在 设置→人设→对话对象 上传的头像并送入视觉上下文。用户让你「看看我的头像 / 我长什么样（指头像）/ 我换头像了」时调用；用户没上传头像会如实报错，不要凭空描述用户长相`
     : '';
@@ -408,6 +409,14 @@ ${recentText}`;
 }
 
 // ================= 日程：自然语言解析 =================
+// 环境语言指令（v0.7.0）：界面语言为 en 时，生成类提示词（日程解析/Excel 拆解/陪读大纲/
+// 剧本/两代问答/通读笔记/时间报告）统一追加英文输出要求——环境产出随界面语言，角色对话不经此通道。
+// zh 模式返回空串（提示词逐字节不变，不破前缀缓存）。
+function langDirective() {
+  if (i18n.lang() !== 'en') return '';
+  return '\n\n[LANGUAGE REQUIREMENT] The app UI language is English. All generated content you produce (questions, drafts, labels, outlines, script dialogue/narration, quizzes, notes, reports) must be written in natural English. Proper nouns and quoted original text may stay in their original language.';
+}
+
 function scheduleParsePrompt(text) {
   return `你是日程解析器。只输出一个 JSON 对象，不要有任何其他文字。
 当前时间：${nowText()}
@@ -642,6 +651,7 @@ ${recentText}`;
 }
 
 module.exports = {
+  langDirective,
   nowText, roleplaySystem, quickSystem, memoryExtractPrompt,
   userProfileDriftPrompt, stripHarnessNotes, HARNESS_NOTE_RE,
   MEMORY_DISCIPLINE, isDisciplineCommand, demoBlock,

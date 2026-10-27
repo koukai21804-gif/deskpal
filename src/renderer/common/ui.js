@@ -1,5 +1,6 @@
 // 通用 UI：toast / confirm / modal / 骨架屏
 import { icon } from './icons.js';
+import { t } from './i18n.js';
 
 const TOAST_ICON = { ok: 'checkCircle', error: 'xCircle', warn: 'alert', info: 'info' };
 
@@ -18,17 +19,17 @@ export function toast(msg, type = 'info', ms = 2600) {
 }
 
 // 确认框 → Promise<boolean>
-export function confirmBox(msg, { title = '确认', okText = '确定', danger = false } = {}) {
+export function confirmBox(msg, { title = '', okText = '', danger = false } = {}) {
   return new Promise(resolve => {
     const mask = document.createElement('div');
     mask.className = 'dp-modal-mask';
     mask.innerHTML = `
       <div class="dp-modal" style="min-width:320px">
-        <div class="modal-head"><span>${esc(title)}</span></div>
+        <div class="modal-head"><span>${esc(title || t('确认'))}</span></div>
         <div class="modal-body" style="padding-bottom:10px;line-height:1.6">${esc(msg)}</div>
         <div class="modal-foot">
-          <button class="btn btn-sm" data-act="no">取消</button>
-          <button class="btn btn-sm ${danger ? 'btn-danger' : 'btn-primary'}" data-act="yes">${esc(okText)}</button>
+          <button class="btn btn-sm" data-act="no">${t('取消')}</button>
+          <button class="btn btn-sm ${danger ? 'btn-danger' : 'btn-primary'}" data-act="yes">${esc(okText || t('确定'))}</button>
         </div>
       </div>`;
     const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); done(false); } };
@@ -53,7 +54,7 @@ export function openModal({ title = '', width } = {}) {
   el.className = 'dp-modal';
   if (width) el.style.width = width;
   el.innerHTML = `<div class="modal-head"><span>${esc(title)}</span>`
-    + `<button class="btn btn-icon sm modal-close" title="关闭（Esc）">${icon('close', 16)}</button></div>`
+    + `<button class="btn btn-icon sm modal-close" title="${t('关闭（Esc）')}">${icon('close', 16)}</button></div>`
     + `<div class="modal-body"></div>`;
   mask.appendChild(el);
   document.body.appendChild(mask);

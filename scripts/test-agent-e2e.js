@@ -587,7 +587,7 @@ section('用例 16：戏内轮结构性收权 + 守卫无条件放行');
   const rec16 = runs.query({}).runs.find(r => r.reqId === 'chat_e2e_16');
   ok(rec16 && rec16.channel === 'roleplay', '未打标 → 台账 channel=roleplay');
   const toolNames16 = ((llmCalls[0].overrides || {}).tools || []).map(t => t.function.name).sort();
-  eq(toolNames16, ['save_memory', 'web_search'], '戏内轮仅下发 web_search + save_memory（文件类工具结构性收权）');
+  eq(toolNames16, ['deep_memory', 'save_memory', 'web_search'], '戏内轮仅下发 web_search + save_memory + deep_memory（文件类工具结构性收权；deep_memory 是角色自身深层记忆只读面 v0.6.3）');
   ok(rec16 && rec16.retries === 0, '戏内轮守卫无条件放行（完成态自述/第三者转述不再触发重试）');
   ok(finalFl16 && finalFl16.clean.includes('读完所有代码'), '最终回复正常送达');
 

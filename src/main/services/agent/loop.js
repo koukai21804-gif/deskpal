@@ -17,6 +17,7 @@ const runs = require('./runs');
 const markers = require('./markers');
 const { createUsageMeter } = require('../token-est');
 const { makeStreamPipeline } = require('../stream-pipeline');
+const i18n = require('../i18n');
 const { compactTurns, estTurns } = require('./ctx-compact');
 
 const CAP_MSG = '已达执行轮次上限。请不要再调用工具，基于现有结果直接给出最终答复。';
@@ -73,7 +74,9 @@ function channelOf(instruction) {
 // + look_screen / look_camera（角色的「眼睛」——看屏幕/开摄像头本就是戏内自然感官，
 //   授权卡照旧：桌面首次开启卡、摄像头逐次卡，隐私闸不因通道放宽）
 // + look_user_avatar（看用户自己上传的头像——用户明确用于让角色看到的图，无需授权卡）
-const ROLEPLAY_TOOLS = ['web_search', 'save_memory', 'look_screen', 'look_camera', 'look_user_avatar'];
+// + deep_memory（角色自身深层记忆的只读查看面 v0.6.3——save_memory 是写入面，这是读取面；
+//   「我记了什么/记忆服务正不正常」是角色对自身记忆的自然认知，只读不写，无需授权卡）
+const ROLEPLAY_TOOLS = ['web_search', 'save_memory', 'look_screen', 'look_camera', 'look_user_avatar', 'deep_memory'];
 // 多模态工具族：模型无图像输入能力时 schema 一律不下发（handler 内还有兜底闸防幻觉调用）
 const VISION_TOOLS = ['read_image', 'look_screen', 'look_camera', 'look_user_avatar'];
 
@@ -274,7 +277,7 @@ async function startRun(opts) {
     });
     if (n > 0 && !compactNoted) {
       compactNoted = true;
-      step({ kind: 'notice', notice: 'ctx_compact', text: `工具上下文超出预算（${toolCtxBudget} est-token），最老的工具结果已压缩为回执（需要时可重读）` });
+      step({ kind: 'notice', notice: 'ctx_compact', text: i18n.tf('工具上下文超出预算（{0} est-token），最老的工具结果已压缩为回执（需要时可重读）', toolCtxBudget) });
     }
     return n;
   };
@@ -437,11 +440,11 @@ async function startRun(opts) {
         try { exists = fs.existsSync(args.path); } catch (_) {}
         const pr = await permissions.request({
           runId, reqId: o.reqId, tool: tc.name,
-          action: exists ? (isAppend ? '追加文件' : '覆盖文件') : '新建文件',
+          action: exists ? (isAppend ? i18n.t('追加文件') : i18n.t('覆盖文件')) : i18n.t('新建文件'),
           scopePaths: [args.path],
-          detail: `${path.basename(String(args.path))}，${bytes} 字节，${exists ? (isAppend ? '追加到已有文件末尾' : '覆盖已有文件') : '新建'}`,
+          detail: i18n.tf('{0}，{1} 字节，{2}', path.basename(String(args.path)), bytes, exists ? (isAppend ? i18n.t('追加到已有文件末尾') : i18n.t('覆盖已有文件')) : i18n.t('新建')),
           reason: args.reason,
-          reversibility: exists ? (isAppend ? '在已有文件末尾追加（diff 卡可见）' : '覆盖已有文件（原内容不自动保留，diff 卡可见）') : 'temp 内新建（可删）',
+          reversibility: exists ? (isAppend ? i18n.t('在已有文件末尾追加（diff 卡可见）') : i18n.t('覆盖已有文件（原内容不自动保留，diff 卡可见）')) : i18n.t('temp 内新建（可删）'),
           timeoutSec: permTimeout,
         });
         if (isStale()) return { ok: false, content: '' }; // abort 路径已收尾，上层检查后静默退出
@@ -450,7 +453,7 @@ async function startRun(opts) {
           writeDenials++;
           denyStreak.set(norm, (denyStreak.get(norm) || 0) + 1);
           const why = pr.decision === 'timeout' ? '权限卡超时未响应，按拒绝处理' : pr.decision === 'stopped' ? '任务被停止' : '用户点击了拒绝';
-          step({ kind: 'tool', tool: tc.name, summary: args.path + '（已拒绝）', ok: false });
+          step({ kind: 'tool', tool: tc.name, summary: args.path + i18n.t('（已拒绝）'), ok: false });
           return { ok: false, content: jstr({ ok: false, error: `用户拒绝了这次写入（${why}）。请调整方案或向用户说明。` }), breakHint: (denyStreak.get(norm) || 0) >= 2 };
         }
         denyStreak.delete(norm); // 连续拒绝被打断，重新计数
@@ -548,7 +551,7 @@ async function startRun(opts) {
           overflowStage++;
           let flushed = false;
           try { if (o.onContextOverflow) { await o.onContextOverflow(); flushed = true; } } catch (_) {}
-          step({ kind: 'notice', notice: 'context_overflow', text: `上下文超出模型窗口，第 ${overflowStage} 级压缩后续跑${flushed ? '（已先固化记忆）' : ''}` });
+          step({ kind: 'notice', notice: 'context_overflow', text: i18n.tf('上下文超出模型窗口，第 {0} 级压缩后续跑', overflowStage) + (flushed ? i18n.t('（已先固化记忆）') : '') });
           const base = Array.isArray(o.baseMessages) ? o.baseMessages : [];
           if (overflowStage === 1) {
             o.baseMessages = [
@@ -581,7 +584,7 @@ async function startRun(opts) {
         if (!res.committed && !overCap && lengthRetries < 2) {
           lengthRetries++;
           record.lengthRetries = lengthRetries;
-          step({ kind: 'notice', notice: 'stream_cut_retry', text: `响应流中途断开，继续任务（${lengthRetries}/2）` });
+          step({ kind: 'notice', notice: 'stream_cut_retry', text: i18n.tf('响应流中途断开，继续任务（{0}/2）', lengthRetries) });
           pipeline.reset();
           // 零字节轮（首响应超时/连接未及出字）：没有可保留的输出，只推续跑指令——
           // 推空 assistant 会让思考模式 400（run_mupxfru8_1 实测）
@@ -591,7 +594,7 @@ async function startRun(opts) {
           continue;
         }
         const layer = res.streamError ? res.streamError.layer : 'stream';
-        step({ kind: 'notice', notice: 'stream_cut_partial', text: `响应流中途断开且正文已送达（${layer}），如实收尾` });
+        step({ kind: 'notice', notice: 'stream_cut_partial', text: i18n.tf('响应流中途断开且正文已送达（{0}），如实收尾', layer) });
         return await finishRun(res.content, { suffix: markers.streamPartialNote() });
       }
 
@@ -603,7 +606,7 @@ async function startRun(opts) {
         if (res.finishReason === 'length' && !overCap && lengthRetries < 2) {
           lengthRetries++;
           record.lengthRetries = lengthRetries;
-          step({ kind: 'notice', notice: 'length_retry', text: `输出被 max_tokens 截断，工具调用未执行，重试（${lengthRetries}/2）` });
+          step({ kind: 'notice', notice: 'length_retry', text: i18n.tf('输出被 max_tokens 截断，工具调用未执行，重试（{0}/2）', lengthRetries) });
           pipeline.reset();
           pushTruncatedTurn(res, 'length', LENGTH_MSG);
           continue;
@@ -624,10 +627,10 @@ async function startRun(opts) {
         const claimKind = writeClaim ? 'write' : readClaim ? 'read' : searchClaim ? 'search' : null;
         if (armed && ((taskLike && executedTools === 0) || claimKind) && writeDenials === 0 && retries === 0 && !overCap) {
           retries = 1; record.retries = 1;
-          const noticeText = claimKind === 'write' ? '检测到声称已写入但没有成功写入记录，自动重试一轮（1/1）'
-            : claimKind === 'read' ? '检测到声称已读取但没有任何成功的文件读取，自动重试一轮（1/1）'
-            : claimKind === 'search' ? '检测到声称已检索但没有任何成功的联网检索，自动重试一轮（1/1）'
-            : '检测到未执行工具即声称完成，自动重试一轮（1/1）';
+          const noticeText = claimKind === 'write' ? i18n.t('检测到声称已写入但没有成功写入记录，自动重试一轮（1/1）')
+            : claimKind === 'read' ? i18n.t('检测到声称已读取但没有任何成功的文件读取，自动重试一轮（1/1）')
+            : claimKind === 'search' ? i18n.t('检测到声称已检索但没有任何成功的联网检索，自动重试一轮（1/1）')
+            : i18n.t('检测到未执行工具即声称完成，自动重试一轮（1/1）');
           // 命中句留痕（dev.5）：台账不存中间轮原文，误判事后无法校准（本次画像事故
           // 就因缺第一轮原文而难以归因）——把命中的完成态原句（截断）写进 notice step
           const claimRe = claimKind === 'write' ? WRITE_CLAIM_RE : claimKind === 'read' ? READ_CLAIM_RE : SEARCH_CLAIM_RE;
@@ -730,4 +733,4 @@ function _claimsWrite(text, instruction) { return claimsWrite(text, instruction)
 function _claimsRead(text, instruction) { return claimsRead(text, instruction); }
 function _instructionIsTask(instruction) { return instructionIsTask(instruction); }
 
-module.exports = { startRun, abortRun, hasRun, channelOf, _claimsSearch, _claimsWrite, _claimsRead, _instructionIsTask, _channelOf: channelOf };
+module.exports = { startRun, abortRun, hasRun, channelOf, ROLEPLAY_TOOLS, _claimsSearch, _claimsWrite, _claimsRead, _instructionIsTask, _channelOf: channelOf };

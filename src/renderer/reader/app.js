@@ -1,5 +1,6 @@
 // 陪读窗：书库 → 生成进度 → galgame 放映（打字机/自动/历史/测验/黑板/举手提问）
 import { dp, initTheme, errText, esc } from '../common/ipc.js';
+import { t, tf } from '../common/i18n.js';
 import { renderMD } from '../common/md.js';
 import { toast, confirmBox, openModal } from '../common/ui.js';
 import { mountTitlebar } from '../common/windows/titlebar.js';
@@ -7,7 +8,7 @@ import { icon } from '../common/icons.js';
 import { renderPet } from '../pet/sprite.js';
 
 const app = document.getElementById('app');
-app.appendChild(mountTitlebar('deskpal · 陪读'));
+app.appendChild(mountTitlebar(t('deskpal · 陪读')));
 
 const root = document.createElement('div');
 root.className = 'reader-wrap';
@@ -94,19 +95,19 @@ function renderLibrary() {
   lib = null;
   root.innerHTML = `
     <div class="lib-toolbar">
-      <button class="btn btn-primary" id="uploadBtn">${icon('file', 14)} 上传书籍 / 论文</button>
-      <button class="btn btn-primary" id="videoBtn">${icon('video', 14)} 解析视频</button>
-      <span class="hint">文档支持 txt / md / pdf / doc / docx；视频支持 B站 / YouTube / MP4 直链 / 本地文件。解析后可选「陪读剧情」或「自由提问」模式</span>
+      <button class="btn btn-primary" id="uploadBtn">${icon('file', 14)} ${t('上传书籍 / 论文')}</button>
+      <button class="btn btn-primary" id="videoBtn">${icon('video', 14)} ${t('解析视频')}</button>
+      <span class="hint">${t('文档支持 txt / md / pdf / doc / docx；视频支持 B站 / YouTube / MP4 直链 / 本地文件。解析后可选「陪读剧情」或「自由提问」模式')}</span>
     </div>
     <div class="lib-list" id="libList"></div>`;
   const listEl = root.querySelector('#libList');
   if (!books.length) {
-    listEl.innerHTML = `<div class="empty">还没有资料。<br>上传一本书或解析一个视频，我来陪你读～</div>`;
+    listEl.innerHTML = `<div class="empty">${t('还没有资料。')}<br>${t('上传一本书或解析一个视频，我来陪你读～')}</div>`;
   }
   for (const b of books) {
     const card = document.createElement('div');
     card.className = 'book-card card';
-    const statusMap = { parsed: ['parsed', '待生成'], generating: ['generating', '生成中'], ready: ['ready', b.mode === 'free' ? '可提问' : (b.hasCursor ? '可续读' : '可开读')], error: ['error', '失败'] };
+    const statusMap = { parsed: ['parsed', t('待生成')], generating: ['generating', t('生成中')], ready: ['ready', b.mode === 'free' ? t('可提问') : (b.hasCursor ? t('可续读') : t('可开读'))], error: ['error', t('失败')] };
     const [cls, txt] = statusMap[b.status] || ['parsed', b.status];
     card.innerHTML = `
       <div class="cover">${b.isVideo ? icon('video', 22) : icon('book', 22)}</div>
@@ -114,22 +115,22 @@ function renderLibrary() {
         <div class="title">${esc(b.title)}</div>
         <div class="sub">
           <span class="status-chip ${cls}">${txt}</span>
-          ${b.mode === 'free' && b.status === 'ready' ? ' · 自由提问' : ''}
-          ${b.frames ? ` · ${b.frames} 帧` : ''}${b.qa ? ` · 问过 ${b.qa} 次` : ''}${b.meta?.chars ? ` · ${(b.meta.chars / 10000).toFixed(1)} 万字` : ''}${b.isVideo && b.meta?.durationSeconds ? ` · ${Math.round(b.meta.durationSeconds / 60)} 分钟` : ''}
+          ${b.mode === 'free' && b.status === 'ready' ? ' · ' + t('自由提问') : ''}
+          ${b.frames ? tf(' · {0} 帧', b.frames) : ''}${b.qa ? tf(' · 问过 {0} 次', b.qa) : ''}${b.meta?.chars ? tf(' · {0} 万字', (b.meta.chars / 10000).toFixed(1)) : ''}${b.isVideo && b.meta?.durationSeconds ? tf(' · {0} 分钟', Math.round(b.meta.durationSeconds / 60)) : ''}
         </div>
       </div>
       <div class="row">
-        ${b.status === 'ready' && b.mode !== 'free' ? `<button class="btn btn-sm btn-primary" data-a="play">${icon('play', 12)} ${b.hasCursor ? '继续' : '开始陪读'}</button>` : ''}
-        ${b.status === 'ready' && b.mode === 'free' ? `<button class="btn btn-sm btn-primary" data-a="play">${icon('message', 14)} 继续提问</button>` : ''}
-        ${b.status === 'parsed' ? `<button class="btn btn-sm btn-primary" data-a="gen" title="生成逐节讲解剧本，配测验与黑板">${icon('sparkle', 14)} 陪读剧情</button>` : ''}
-        ${b.status === 'parsed' ? `<button class="btn btn-sm" data-a="free" title="通读全文做笔记，然后安静等你提问">${icon('message', 14)} 自由提问</button>` : ''}
-        ${b.status === 'generating' ? `<button class="btn btn-sm" data-a="view">查看进度</button>` : ''}
-        ${b.status === 'error' ? `<button class="btn btn-sm btn-primary" data-a="gen">${icon('sparkle', 14)} 重试剧情</button>` : ''}
-        ${b.status === 'error' ? `<button class="btn btn-sm" data-a="free" title="改走自由提问模式（通读全文→安静等提问）">${icon('message', 14)} 改自由提问</button>` : ''}
-        ${b.status === 'ready' && b.mode !== 'free' ? `<button class="btn btn-sm" data-a="regen" title="用当前人设与称呼重新生成剧情">${icon('refresh', 14)} 重新生成</button>` : ''}
-        ${b.status === 'ready' && b.mode !== 'free' ? `<button class="btn btn-sm" data-a="tofree" title="改用自由提问模式：通读全文做笔记，安静等你提问（问答记录保留）">${icon('message', 14)} 转自由提问</button>` : ''}
-        ${b.status === 'ready' && b.mode === 'free' ? `<button class="btn btn-sm" data-a="toflow" title="改用逐节讲解剧本模式（问答记录保留）">${icon('book', 14)} 转陪读剧情</button>` : ''}
-        <button class="btn btn-sm btn-icon" data-a="del" title="删除">${icon('trash', 15)}</button>
+        ${b.status === 'ready' && b.mode !== 'free' ? `<button class="btn btn-sm btn-primary" data-a="play">${icon('play', 12)} ${b.hasCursor ? t('继续') : t('开始陪读')}</button>` : ''}
+        ${b.status === 'ready' && b.mode === 'free' ? `<button class="btn btn-sm btn-primary" data-a="play">${icon('message', 14)} ${t('继续提问')}</button>` : ''}
+        ${b.status === 'parsed' ? `<button class="btn btn-sm btn-primary" data-a="gen" title="${t('生成逐节讲解剧本，配测验与黑板')}">${icon('sparkle', 14)} ${t('陪读剧情')}</button>` : ''}
+        ${b.status === 'parsed' ? `<button class="btn btn-sm" data-a="free" title="${t('通读全文做笔记，然后安静等你提问')}">${icon('message', 14)} ${t('自由提问')}</button>` : ''}
+        ${b.status === 'generating' ? `<button class="btn btn-sm" data-a="view">${t('查看进度')}</button>` : ''}
+        ${b.status === 'error' ? `<button class="btn btn-sm btn-primary" data-a="gen">${icon('sparkle', 14)} ${t('重试剧情')}</button>` : ''}
+        ${b.status === 'error' ? `<button class="btn btn-sm" data-a="free" title="${t('改走自由提问模式（通读全文→安静等提问）')}">${icon('message', 14)} ${t('改自由提问')}</button>` : ''}
+        ${b.status === 'ready' && b.mode !== 'free' ? `<button class="btn btn-sm" data-a="regen" title="${t('用当前人设与称呼重新生成剧情')}">${icon('refresh', 14)} ${t('重新生成')}</button>` : ''}
+        ${b.status === 'ready' && b.mode !== 'free' ? `<button class="btn btn-sm" data-a="tofree" title="${t('改用自由提问模式：通读全文做笔记，安静等你提问（问答记录保留）')}">${icon('message', 14)} ${t('转自由提问')}</button>` : ''}
+        ${b.status === 'ready' && b.mode === 'free' ? `<button class="btn btn-sm" data-a="toflow" title="${t('改用逐节讲解剧本模式（问答记录保留）')}">${icon('book', 14)} ${t('转陪读剧情')}</button>` : ''}
+        <button class="btn btn-sm btn-icon" data-a="del" title="${t('删除')}">${icon('trash', 15)}</button>
       </div>`;
     card.addEventListener('click', async (e) => {
       const a = e.target.closest('button')?.dataset.a;
@@ -138,20 +139,20 @@ function renderLibrary() {
       if (a === 'gen') return startGenerate(b.id, 'flow');
       if (a === 'free') return startGenerate(b.id, 'free');
       if (a === 'tofree') {
-        if (!(await confirmBox(`把《${b.title}》转为自由提问模式？\n\n她将通读全文重新做笔记（原剧情进度作废，问答记录保留），然后安静等你提问。`, { okText: '转换' }))) return;
+        if (!(await confirmBox(tf('把《{0}》转为自由提问模式？\n\n她将通读全文重新做笔记（原剧情进度作废，问答记录保留），然后安静等你提问。', b.title), { okText: t('转换') }))) return;
         return startGenerate(b.id, 'free');
       }
       if (a === 'toflow') {
-        if (!(await confirmBox(`把《${b.title}》转为逐节陪读剧情模式？\n（已有问答保留，将重新生成剧本帧）`, { okText: '转换' }))) return;
+        if (!(await confirmBox(tf('把《{0}》转为逐节陪读剧情模式？\n（已有问答保留，将重新生成剧本帧）', b.title), { okText: t('转换') }))) return;
         return startGenerate(b.id, 'flow');
       }
       if (a === 'regen') {
-        if (!(await confirmBox(`用当前人设与称呼重新生成《${b.title}》的剧本？\n（已有进度与举手问答会保留，剧情帧会全部重写）`, { okText: '重新生成' }))) return;
+        if (!(await confirmBox(tf('用当前人设与称呼重新生成《{0}》的剧本？\n（已有进度与举手问答会保留，剧情帧会全部重写）', b.title), { okText: t('重新生成') }))) return;
         return startGenerate(b.id, 'flow');
       }
       if (a === 'view') return openBook(b.id);
       if (a === 'del') {
-        if (!(await confirmBox(`删除《${b.title}》及其陪读进度？`, { danger: true, okText: '删除' }))) return;
+        if (!(await confirmBox(tf('删除《{0}》及其陪读进度？', b.title), { danger: true, okText: t('删除') }))) return;
         await dp.readerDelete(b.id);
         await refreshBooks();
         renderLibrary();
@@ -162,14 +163,14 @@ function renderLibrary() {
 
   root.querySelector('#uploadBtn').addEventListener('click', async () => {
     const p = await dp.pickFile({
-      title: '选择书籍/论文',
-      filters: [{ name: '文档', extensions: ['txt', 'md', 'markdown', 'pdf', 'doc', 'docx'] }],
+      title: t('选择书籍/论文'),
+      filters: [{ name: t('文档'), extensions: ['txt', 'md', 'markdown', 'pdf', 'doc', 'docx'] }],
     });
     if (!p) return;
-    toast('正在解析文档…');
+    toast(t('正在解析文档…'));
     try {
       const { meta } = await dp.readerUpload(p);
-      toast(`解析完成：${meta.chars} 字符${meta.truncated ? '（已截断到 30 万）' : ''}，请选择陪读剧情或自由提问模式`, 'ok');
+      toast(tf('解析完成：{0} 字符{1}，请选择陪读剧情或自由提问模式', meta.chars, meta.truncated ? t('（已截断到 30 万）') : ''), 'ok');
       // 停在书库：新卡片上选「陪读剧情」或「自由提问」（视频路径同款节奏）
       await refreshBooks();
       renderLibrary();
@@ -190,37 +191,37 @@ async function startGenerate(bookId, mode) {
 let videoModal = null;      // { close } 弹窗引用
 let videoModalState = null; // { running, token }
 function openVideoModal() {
-  const m = openModal({ title: '解析视频为陪读资料', width: '520px' });
+  const m = openModal({ title: t('解析视频为陪读资料'), width: '520px' });
   videoModal = m;
   videoModalState = { running: false, token: null };
   m.body.innerHTML = `
-    <div class="field"><span class="label">视频链接（Bilibili / YouTube / .mp4 直链）</span>
+    <div class="field"><span class="label">${t('视频链接（Bilibili / YouTube / .mp4 直链）')}</span>
       <input type="text" id="vd-url" placeholder="https://www.bilibili.com/video/BV… 或 https://youtu.be/… 或 https://example.com/video.mp4" style="width:100%"></div>
-    <div class="field"><span class="label">或本地视频文件</span>
-      <div class="row"><button class="btn btn-sm" id="vd-pick">${icon('folder', 14)} 选择文件（mp4 / mkv / webm / mov / avi…）</button>
+    <div class="field"><span class="label">${t('或本地视频文件')}</span>
+      <div class="row"><button class="btn btn-sm" id="vd-pick">${icon('folder', 14)} ${t('选择文件（mp4 / mkv / webm / mov / avi…）')}</button>
       <span class="hint" id="vd-file"></span></div></div>
-    <p class="hint">流程：优先抓取视频字幕（快且免费）；没有字幕时下载音频做语音转写（需配置 ASR，见 设置→API→视频解析）。完成后可选择「陪读剧情」或「自由提问」模式。上限 2 小时 / 1.5GB。</p>
+    <p class="hint">${t('流程：优先抓取视频字幕（快且免费）；没有字幕时下载音频做语音转写（需配置 ASR，见 设置→API→视频解析）。完成后可选择「陪读剧情」或「自由提问」模式。上限 2 小时 / 1.5GB。')}</p>
     <div class="row">
-      <button class="btn btn-primary" id="vd-start">开始解析</button>
-      <button class="btn" id="vd-cancel" style="display:none">取消</button>
+      <button class="btn btn-primary" id="vd-start">${t('开始解析')}</button>
+      <button class="btn" id="vd-cancel" style="display:none">${t('取消')}</button>
       <span class="hint" id="vd-status"></span>
     </div>
     <div class="progress" id="vd-bar-wrap" style="display:none;margin-top:10px"><div id="vd-bar" style="width:0%"></div></div>`;
   let localPath = '';
   m.body.querySelector('#vd-pick').addEventListener('click', async () => {
-    const p = await dp.pickFile({ title: '选择本地视频', filters: [{ name: '视频', extensions: ['mp4', 'mkv', 'webm', 'mov', 'avi', 'flv', 'm4v', 'ts', 'wmv'] }] });
+    const p = await dp.pickFile({ title: t('选择本地视频'), filters: [{ name: t('视频'), extensions: ['mp4', 'mkv', 'webm', 'mov', 'avi', 'flv', 'm4v', 'ts', 'wmv'] }] });
     if (p) { localPath = p; m.body.querySelector('#vd-file').textContent = p.split(/[\\/]/).pop(); }
   });
   const startBtn = m.body.querySelector('#vd-start');
   const cancelBtn = m.body.querySelector('#vd-cancel');
   startBtn.addEventListener('click', async () => {
     const url = m.body.querySelector('#vd-url').value.trim();
-    if (!url && !localPath) { toast('请填写视频链接或选择本地文件', 'error'); return; }
+    if (!url && !localPath) { toast(t('请填写视频链接或选择本地文件'), 'error'); return; }
     videoModalState.running = true;
     startBtn.disabled = true;
     cancelBtn.style.display = '';
     m.body.querySelector('#vd-bar-wrap').style.display = '';
-    m.body.querySelector('#vd-status').textContent = '正在启动…';
+    m.body.querySelector('#vd-status').textContent = t('正在启动…');
     try {
       await dp.readerUploadVideo(url ? { url } : { path: localPath });
       // 成功路径由 reader:video-progress(done) 处理（含 bookId）；此处兜底关闭
@@ -235,7 +236,7 @@ function openVideoModal() {
   });
   cancelBtn.addEventListener('click', async () => {
     await dp.readerVideoCancel();
-    m.body.querySelector('#vd-status').textContent = '正在取消…';
+    m.body.querySelector('#vd-status').textContent = t('正在取消…');
   });
 }
 
@@ -249,7 +250,7 @@ dp.on('reader:video-progress', ({ token, stage, pct, message, done, bookId, erro
   if (!done) return;
   // 终态：成功→入库回书库；失败→恢复表单
   if (error) {
-    toast('视频解析失败：' + error, 'error', 7000);
+    toast(tf('视频解析失败：{0}', error), 'error', 7000);
     if (status) status.textContent = '';
     if (barWrap) barWrap.style.display = 'none';
     const startBtn = document.querySelector('#vd-start');
@@ -261,7 +262,7 @@ dp.on('reader:video-progress', ({ token, stage, pct, message, done, bookId, erro
     videoModal.close();
     videoModal = null;
     videoModalState = null;
-    toast('视频解析完成，已加入书库', 'ok');
+    toast(t('视频解析完成，已加入书库'), 'ok');
     (async () => {
       await refreshBooks();
       renderLibrary();
@@ -273,13 +274,13 @@ dp.on('reader:video-progress', ({ token, stage, pct, message, done, bookId, erro
 function renderGenerating() {
   root.innerHTML = `
     <div class="gen-view">
-      <div class="stage-text" id="genText">正在准备…</div>
+      <div class="stage-text" id="genText">${t('正在准备…')}</div>
       <div class="progress gen-progress"><div id="genBar" style="width:0%"></div></div>
-      <button class="btn btn-sm" id="genCancel">取消生成</button>
+      <button class="btn btn-sm" id="genCancel">${t('取消生成')}</button>
     </div>`;
   root.querySelector('#genCancel').addEventListener('click', async () => {
     await dp.readerCancelGenerate(lib.id);
-    toast('已请求取消');
+    toast(t('已请求取消'));
   });
 }
 
@@ -290,7 +291,7 @@ dp.on('reader:progress', ({ bookId, stage, pct, message }) => {
     return;
   }
   if (stage === 'done') { openBook(bookId); return; }
-  if (stage === 'error') { toast('生成失败：' + message, 'error', 5000); renderLibrary(); return; }
+  if (stage === 'error') { toast(tf('生成失败：{0}', message), 'error', 5000); renderLibrary(); return; }
   const bar = root.querySelector('#genBar'), txt = root.querySelector('#genText');
   if (bar) bar.style.width = pct + '%';
   if (txt) txt.textContent = message || '';
@@ -301,7 +302,7 @@ dp.on('reader:progress', ({ bookId, stage, pct, message }) => {
 async function openBook(bookId) {
   try { lib = await dp.readerLoad(bookId); } catch (err) { toast(errText(err), 'error'); return; }
   if (lib.status === 'generating') { renderGenerating(); return; }
-  if (lib.status === 'error') { toast('上次生成失败：' + (lib.error || ''), 'error', 5000); renderLibrary(); return; }
+  if (lib.status === 'error') { toast(tf('上次生成失败：{0}', lib.error || ''), 'error', 5000); renderLibrary(); return; }
   if (lib.status === 'parsed') { renderLibrary(); return; }
 
   if ((lib.mode || 'flow') === 'free') { renderFreeView(); return; }
@@ -317,33 +318,33 @@ function renderFreeView() {
     <div class="play-view">
       <div class="stage-left" id="stageLeft">
         <div class="gal-title">
-          <button class="btn btn-sm" id="backLib">${icon('arrowL', 14)} 书库</button>
+          <button class="btn btn-sm" id="backLib">${icon('arrowL', 14)} ${t('书库')}</button>
           <strong>${esc(lib.title)}</strong>
           <span class="grow"></span>
-          <span class="small muted">自由提问 · 已通读</span>
+          <span class="small muted">${t('自由提问 · 已通读')}</span>
         </div>
         <div class="gal-scene">
           <div class="gal-pet" id="galPet"></div>
           <div class="gal-dialog" id="dialog"></div>
         </div>
         <div class="gal-controls">
-          <span class="small muted">${lib.meta?.source === 'video' ? '视频转写' : '资料'} · ${((lib.meta?.chars || 0) / 10000).toFixed(1)} 万字</span>
+          <span class="small muted">${lib.meta?.source === 'video' ? t('视频转写') : t('资料')} · ${tf('{0} 万字', ((lib.meta?.chars || 0) / 10000).toFixed(1))}</span>
           <span class="grow"></span>
-          <label class="row small" style="gap:4px;cursor:pointer" title="拖动角色调整位置；滑杆调整角色大小">
-            ${icon('image', 14)}<button class="btn btn-sm" id="bgBtn" title="设置背景图片">背景</button>
-            <button class="btn btn-sm btn-icon" id="bgClear" title="清除背景图片">${icon('sweep', 15)}</button>
+          <label class="row small" style="gap:4px;cursor:pointer" title="${t('拖动角色调整位置；滑杆调整角色大小')}">
+            ${icon('image', 14)}<button class="btn btn-sm" id="bgBtn" title="${t('设置背景图片')}">${t('背景')}</button>
+            <button class="btn btn-sm btn-icon" id="bgClear" title="${t('清除背景图片')}">${icon('sweep', 15)}</button>
             <input type="range" id="sizeRange" min="0.4" max="2.2" step="0.05" style="width:100px" value="${stageCfg.petScale || 1}">
           </label>
         </div>
       </div>
-      <div class="splitter" id="splitter" title="左右拖动调整舞台与问答的宽度；双击恢复默认"></div>
+      <div class="splitter" id="splitter" title="${t('左右拖动调整舞台与问答的宽度；双击恢复默认')}"></div>
       <div class="stage-right" id="stageRight">
-        <div class="board" id="board"><div class="board-title">黑板</div><div class="board-empty">通读笔记会写在这里</div></div>
+        <div class="board" id="board"><div class="board-title">${t('黑板')}</div><div class="board-empty">${t('通读笔记会写在这里')}</div></div>
         <div class="qa-panel">
           <div class="qa-list" id="qaList"></div>
           <div class="qa-input">
-            <input type="text" id="qaInput" placeholder="自由提问：关于这份资料的任何问题，随问随答…">
-            <button class="btn btn-sm btn-primary" id="qaBtn">提问</button>
+            <input type="text" id="qaInput" placeholder="${t('自由提问：关于这份资料的任何问题，随问随答…')}">
+            <button class="btn btn-sm btn-primary" id="qaBtn">${t('提问')}</button>
           </div>
         </div>
       </div>
@@ -358,12 +359,12 @@ function renderFreeView() {
   applyStage();
   enablePetDrag(root.querySelector('#galPet'));
   root.querySelector('#bgBtn').addEventListener('click', async () => {
-    const p = await dp.pickFile({ title: '选择陪读背景图片', filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }] });
+    const p = await dp.pickFile({ title: t('选择陪读背景图片'), filters: [{ name: t('图片'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }] });
     if (!p) return;
     stageCfg.background = p;
     await dp.storeSet('settings', { reader: stageCfg }).catch(() => {});
     applyStage();
-    toast('背景已更新', 'ok');
+    toast(t('背景已更新'), 'ok');
   });
   root.querySelector('#bgClear').addEventListener('click', async () => {
     stageCfg.background = '';
@@ -416,7 +417,8 @@ function renderFreeView() {
   dialog.className = 'gal-dialog';
   dialog.innerHTML = `<div class="speaker">${esc(petDisplayName)}</div><div class="text"></div>`;
   typewrite(dialog.querySelector('.text'),
-    `《${lib.title}》我全部读完了，笔记在右边的黑板。${masterDisplayName}想从哪里问起？慢慢来，我等你。`);
+    charText(`《${lib.title}》我全部读完了，笔记在右边的黑板。${masterDisplayName}想从哪里问起？慢慢来，我等你。`,
+      '《{0}》我全部读完了，笔记在右边的黑板。{1}想从哪里问起？慢慢来，我等你。', lib.title, masterDisplayName));
   renderQAList();
 }
 
@@ -425,7 +427,7 @@ function renderPlayView() {
     <div class="play-view">
       <div class="stage-left" id="stageLeft">
         <div class="gal-title">
-          <button class="btn btn-sm" id="backLib">${icon('arrowL', 14)} 书库</button>
+          <button class="btn btn-sm" id="backLib">${icon('arrowL', 14)} ${t('书库')}</button>
           <strong>${esc(lib.title)}</strong>
           <span class="grow"></span>
           <span class="small muted">${cursorIdx + 1} / ${lib.frames.length} 帧</span>
@@ -435,27 +437,27 @@ function renderPlayView() {
           <div class="gal-dialog" id="dialog"></div>
         </div>
         <div class="gal-controls">
-          <button class="btn btn-sm" id="prevBtn" title="上一帧">◀ 回看</button>
-          <button class="btn btn-sm btn-primary" id="nextBtn">继续 ▶</button>
-          <label class="row small" style="gap:4px;cursor:pointer"><input type="checkbox" id="autoChk"> 自动播放</label>
+          <button class="btn btn-sm" id="prevBtn" title="${t('上一帧')}">${t('◀ 回看')}</button>
+          <button class="btn btn-sm btn-primary" id="nextBtn">${t('继续 ▶')}</button>
+          <label class="row small" style="gap:4px;cursor:pointer"><input type="checkbox" id="autoChk"> ${t('自动播放')}</label>
           <span class="grow"></span>
-          <label class="row small" style="gap:5px" title="拖动角色调整位置；滑杆调整角色大小">
-            ${icon('image', 14)}<button class="btn btn-sm" id="bgBtn" title="设置背景图片">背景</button>
-            <button class="btn btn-sm btn-icon" id="bgClear" title="清除背景图片">${icon('sweep', 15)}</button>
-            <button class="btn btn-sm" id="dlgBtn" title="文字框样式（背景色/字体/字号/字色）">Aa</button>
+          <label class="row small" style="gap:5px" title="${t('拖动角色调整位置；滑杆调整角色大小')}">
+            ${icon('image', 14)}<button class="btn btn-sm" id="bgBtn" title="${t('设置背景图片')}">${t('背景')}</button>
+            <button class="btn btn-sm btn-icon" id="bgClear" title="${t('清除背景图片')}">${icon('sweep', 15)}</button>
+            <button class="btn btn-sm" id="dlgBtn" title="${t('文字框样式（背景色/字体/字号/字色）')}">Aa</button>
             <input type="range" id="sizeRange" min="0.4" max="2.2" step="0.05" style="width:100px" value="${stageCfg.petScale || 1}">
           </label>
           <span class="small muted" id="sectionTag" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
         </div>
       </div>
-      <div class="splitter" id="splitter" title="左右拖动调整背景与黑板的宽度；双击恢复默认"></div>
+      <div class="splitter" id="splitter" title="${t('左右拖动调整背景与黑板的宽度；双击恢复默认')}"></div>
       <div class="stage-right" id="stageRight">
-        <div class="board" id="board"><div class="board-title">黑板</div><div class="board-empty">讲解要点会写在这里</div></div>
+        <div class="board" id="board"><div class="board-title">${t('黑板')}</div><div class="board-empty">${t('讲解要点会写在这里')}</div></div>
         <div class="qa-panel">
           <div class="qa-list" id="qaList"></div>
           <div class="qa-input">
-            <input type="text" id="qaInput" placeholder="举手提问：关于原文的任何问题…">
-            <button class="btn btn-sm btn-primary" id="qaBtn">提问</button>
+            <input type="text" id="qaInput" placeholder="${t('举手提问：关于原文的任何问题…')}">
+            <button class="btn btn-sm btn-primary" id="qaBtn">${t('提问')}</button>
           </div>
         </div>
       </div>
@@ -474,12 +476,12 @@ function renderPlayView() {
   applyStage();
   enablePetDrag(root.querySelector('#galPet'));
   root.querySelector('#bgBtn').addEventListener('click', async () => {
-    const p = await dp.pickFile({ title: '选择陪读背景图片', filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }] });
+    const p = await dp.pickFile({ title: t('选择陪读背景图片'), filters: [{ name: t('图片'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }] });
     if (!p) return;
     stageCfg.background = p;
     await dp.storeSet('settings', { reader: stageCfg }).catch(() => {});
     applyStage();
-    toast('背景已更新', 'ok');
+    toast(t('背景已更新'), 'ok');
   });
   root.querySelector('#bgClear').addEventListener('click', async () => {
     stageCfg.background = '';
@@ -530,27 +532,27 @@ function renderPlayView() {
 // 文字框样式设置（背景色/字体/字号/字色，改动即时预览）
 function openDialogStyleModal() {
   const d = stageCfg.dialog = stageCfg.dialog || { bg: '', family: '', size: 0, color: '' };
-  const m = openModal({ title: '文字框样式', width: '400px' });
+  const m = openModal({ title: t('文字框样式'), width: '400px' });
   const famOpts = [
-    ['', '默认'], ["'Microsoft YaHei', sans-serif", '微软雅黑'], ['SimSun, serif', '宋体'],
-    ['SimHei, sans-serif', '黑体'], ['KaiTi, serif', '楷体'], ['FangSong, serif', '仿宋'],
+    ['', t('默认')], ["'Microsoft YaHei', sans-serif", t('微软雅黑')], ['SimSun, serif', t('宋体')],
+    ['SimHei, sans-serif', t('黑体')], ['KaiTi, serif', t('楷体')], ['FangSong, serif', t('仿宋')],
     ['Consolas, monospace', 'Consolas'], ['Arial, sans-serif', 'Arial'],
   ];
   m.body.innerHTML = `
-    <div class="field"><span class="label">文字框背景颜色</span>
+    <div class="field"><span class="label">${t('文字框背景颜色')}</span>
       <div class="row"><input type="color" id="f-bg" value="${d.bg || '#ffffff'}">
-        <button class="btn btn-sm" id="f-bg-reset">恢复默认</button></div></div>
-    <div class="field"><span class="label">字体</span>
+        <button class="btn btn-sm" id="f-bg-reset">${t('恢复默认')}</button></div></div>
+    <div class="field"><span class="label">${t('字体')}</span>
       <select id="f-font" style="width:100%">${famOpts.map(([v, n]) => `<option value="${esc(v)}" ${d.family === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
-    <div class="field"><span class="label">字体大小：<b id="f-size-v">${d.size || 15}</b> px</span>
+    <div class="field"><span class="label">${t('字体大小：')}<b id="f-size-v">${d.size || 15}</b> px</span>
       <input type="range" id="f-size" min="12" max="26" step="1" value="${d.size || 15}"></div>
-    <div class="field"><span class="label">字体颜色</span>
+    <div class="field"><span class="label">${t('字体颜色')}</span>
       <div class="row"><input type="color" id="f-color" value="${d.color || '#2b3328'}">
-        <button class="btn btn-sm" id="f-color-reset">恢复默认</button></div></div>
-    <div class="hint">改动即时预览到下方文字框；「恢复默认」表示跟随主题配色。</div>`;
+        <button class="btn btn-sm" id="f-color-reset">${t('恢复默认')}</button></div></div>
+    <div class="hint">${t('改动即时预览到下方文字框；「恢复默认」表示跟随主题配色。')}</div>`;
   const foot = document.createElement('div');
   foot.className = 'modal-foot';
-  foot.innerHTML = `<button class="btn btn-primary" id="f-done">完成</button>`;
+  foot.innerHTML = `<button class="btn btn-primary" id="f-done">${t('完成')}</button>`;
   m.el.appendChild(foot);
 
   const upd = () => applyDialogStyle();
@@ -580,7 +582,7 @@ function showFrame(idx, advanceCursor = true) {
     lib.cursor = f.id;
     dp.readerSave(lib.id, { cursor: f.id }).catch(() => {});
   }
-  root.querySelector('.gal-title .small.muted').textContent = `${cursorIdx + 1} / ${lib.frames.length} 帧`;
+  root.querySelector('.gal-title .small.muted').textContent = tf('{0} / {1} 帧', cursorIdx + 1, lib.frames.length);
   const sec = sectionOf(f);
   root.querySelector('#sectionTag').textContent = sec ? sec.title : '';
 
@@ -591,14 +593,14 @@ function showFrame(idx, advanceCursor = true) {
   // 黑板
   const board = root.querySelector('#board');
   if (f.bb && f.bb.trim()) {
-    board.innerHTML = `<div class="board-title">黑板 · ${esc(sec ? sec.title : '')}</div><div class="md">${renderMD(f.bb)}</div>`;
+    board.innerHTML = `<div class="board-title">${tf('黑板 · {0}', esc(sec ? sec.title : ''))}</div><div class="md">${renderMD(f.bb)}</div>`;
   }
 
   lastQuizPick = null;
   if (f.type === 'quiz') {
     dialog.className = 'gal-dialog';
     dialog.innerHTML = `
-      <div class="speaker">${icon('questionCircle', 13)} 随堂小测</div>
+      <div class="speaker">${icon('questionCircle', 13)} ${t('随堂小测')}</div>
       <div class="text">${esc(f.q)}</div>
       <div class="quiz-opts">
         ${f.options.map((o, i) => `<button data-i="${i}">${String.fromCharCode(65 + i)}. ${esc(o)}</button>`).join('')}
@@ -607,7 +609,7 @@ function showFrame(idx, advanceCursor = true) {
     dialog.querySelectorAll('.quiz-opts button').forEach(btn => btn.addEventListener('click', () => pickQuiz(+btn.dataset.i)));
   } else {
     dialog.className = 'gal-dialog' + (f.type === 'narration' ? ' narration' : '');
-    const speaker = f.type === 'narration' ? '旁白' : petDisplayName;
+    const speaker = f.type === 'narration' ? t('旁白') : petDisplayName;
     dialog.innerHTML = `<div class="speaker">${esc(speaker)}</div><div class="text"></div>`;
     typewrite(dialog.querySelector('.text'), f.text || '');
   }
@@ -651,7 +653,7 @@ function nextFrame() {
     dp.petEmote('happy', 'reader', 8000);
     const dialog = root.querySelector('#dialog');
     dialog.className = 'gal-dialog';
-    dialog.innerHTML = `<div class="speaker">${icon('book', 14)}</div><div class="text">这本书读完了！恭喜${esc(masterDisplayName)}～有感悟可以举手问我，或者回书库换下一本。</div>`;
+    dialog.innerHTML = `<div class="speaker">${icon('book', 14)}</div><div class="text">${charText('这本书读完了！恭喜{0}～有感悟可以举手问我，或者回书库换下一本。', '这本书读完了！恭喜{0}～有感悟可以举手问我，或者回书库换下一本。', esc(masterDisplayName))}</div>`;
     return;
   }
   showFrame(cursorIdx + 1);
@@ -674,7 +676,7 @@ document.addEventListener('click', (e) => {
 function renderQAList() {
   const el = root.querySelector('#qaList');
   if (!el) return;
-  el.innerHTML = lib.qa && lib.qa.length ? '' : '<div class="small muted" style="padding:4px 2px">读书时随时提问，我会基于原文回答，不影响剧情进度</div>';
+  el.innerHTML = lib.qa && lib.qa.length ? '' : `<div class="small muted" style="padding:4px 2px">${t('读书时随时提问，我会基于原文回答，不影响剧情进度')}</div>`;
   for (const qa of lib.qa || []) {
     const item = document.createElement('div');
     item.className = 'qa-item';
@@ -730,6 +732,17 @@ function applyPersona(p) {
   if (p.pet && p.pet.name) petDisplayName = p.pet.name;
   const mn = p.user && String(p.user.name || '').trim();
   if (mn) masterDisplayName = mn;
+  // 角色台词语言（用户裁定 20261028）：跟随表现层 ops.language——English→英文、
+  // 中英混合→跟随系统界面语言、其余（中文/日本語/未设置）→中文兜底
+  charLang = (p.ops && p.ops.language) || '';
+}
+
+// 角色台词取词：zh/en 双语按上面裁定解析；词典直查（不经 t()——t 跟随系统语言，这里跟随角色语言）
+let charLang = '';
+function charText(zh, enKey, ...vals) {
+  const dict = (typeof globalThis !== 'undefined' && globalThis.DP_I18N_EN) || {};
+  const line = (charLang === 'English' && Object.prototype.hasOwnProperty.call(dict, enKey)) ? dict[enKey] : zh;
+  return line.replace(/\{(\d+)\}/g, (_, i) => (vals[+i] == null ? '' : String(vals[+i])));
 }
 
 (async function boot() {

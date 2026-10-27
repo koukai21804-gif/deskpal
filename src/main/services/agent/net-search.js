@@ -8,6 +8,7 @@ const logger = require('../../logger');
 const windows = require('../../windows');
 const ledger = require('./search-ledger');
 const permissions = require('./permissions');
+const i18n = require('../i18n');
 const { tokenEstimate } = require('../token-est');
 
 // ---------- 查询词本地拦截规则（规则表不出网） ----------
@@ -232,11 +233,11 @@ async function execute(args, ctx = {}) {
     }
     const pr = await permissions.request({
       runId: ctx.runId, reqId: ctx.reqId, tool: 'web_search',
-      action: '开启联网搜索',
+      action: i18n.t('开启联网搜索'),
       scopePaths: [query.slice(0, 60)],
-      detail: `检索词「${query.slice(0, 40)}」；开启后可随时在 设置→联网搜索 关闭`,
+      detail: i18n.tf('检索词「{0}」；开启后可随时在 设置→联网搜索 关闭', query.slice(0, 40)),
       reason,
-      reversibility: '设置页一键关闭（关闭即时生效）',
+      reversibility: i18n.t('设置页一键关闭（关闭即时生效）'),
       timeoutSec: ctx.permTimeoutSec || 120,
     });
     if (pr.decision !== 'allow_once') {
@@ -244,7 +245,7 @@ async function execute(args, ctx = {}) {
       return { ok: false, error: '用户没有同意开启联网搜索，本次不执行。请如实告知用户。' };
     }
     store.set('settings', { agent: { webSearch: { enabled: true } } });
-    if (ctx.step) { try { ctx.step({ kind: 'notice', notice: 'search_enabled', text: '联网搜索已开启，可在设置→联网搜索 关闭' }); } catch (_) {} }
+    if (ctx.step) { try { ctx.step({ kind: 'notice', notice: 'search_enabled', text: i18n.t('联网搜索已开启，可在设置→联网搜索 关闭') }); } catch (_) {} }
   }
 
   // ---- 源配置闸（开启与配置是两道独立的闸） ----
@@ -286,11 +287,11 @@ async function execute(args, ctx = {}) {
     }
     const pr = await permissions.request({
       runId: ctx.runId, reqId: ctx.reqId, tool: 'web_search',
-      action: '自主联网检索',
+      action: i18n.t('自主联网检索'),
       scopePaths: [query.slice(0, 60)],
       detail: reason,
       reason,
-      reversibility: '仅查询不落盘，账本面板可划除该条',
+      reversibility: i18n.t('仅查询不落盘，账本面板可划除该条'),
       timeoutSec: ctx.permTimeoutSec || 120,
     });
     if (pr.decision !== 'allow_once') {

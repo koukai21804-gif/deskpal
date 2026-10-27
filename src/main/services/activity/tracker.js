@@ -8,6 +8,7 @@ const stats = require('./stats');
 const emotion = require('../emotion');
 const windows = require('../../windows');
 const logger = require('../../logger');
+const i18n = require('../i18n');
 
 let current = null;   // 当前会话 { exeName, exePath, title, start, lastSeen }
 let idleOpen = null;  // { start }
@@ -69,7 +70,7 @@ function onIdleEnd(nowMs) {
         emotion.broadcastEmotion('thinking', { source: 'idle', revertMs: 8000 });
         windows.broadcastAll('pet:bubble', {
           kind: 'ask-label',
-          text: '今天开启的部分应用我不明白是什么类型的，你可以帮我标注一下吗？',
+          text: i18n.t('今天开启的部分应用我不明白是什么类型的，你可以帮我标注一下吗？'),
         });
         windows.broadcastAll('activity:idle-back', { unknownCount: unknown.length });
       }

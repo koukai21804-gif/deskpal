@@ -1,6 +1,6 @@
 // Hermes：hermes-agent 的 agent 状态库 state.db。
 // 根解析（对齐 hermes-agent/hermes_constants.py get_default_hermes_root）：
-//   1) HERMES_HOME 环境变量（桌面安装常用用户级 env 指向自定义根，如 D:\Hermes）——
+//   1) HERMES_HOME 环境变量（桌面安装常用用户级 env 指向自定义根）——
 //      指向 <root>/profiles/<name> 时归一到 <root>；根级须有 config.yaml/.env/state.db 标记；
 //      env 只对本机设备生效（额外设备根走各自标准路径）
 //   2) ~/.hermes、%LOCALAPPDATA%\hermes（平台默认）

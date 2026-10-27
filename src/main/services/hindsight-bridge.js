@@ -66,13 +66,21 @@ function localFilter(text) {
   return { clean: hits.length === 0, hits: hits.map(h => h.name) };
 }
 
-// 语义召回：query=当前用户消息；返回 ≤k 条干净文本（全部失败→[]）
-async function recall(query, k) {
+// 网络层失败的识别（deep_memory 工具据此区分「服务没开」与「服务报错」，
+// 前者要提示用户启动，后者如实转述即可）：Node fetch 网络不可达=TypeError "fetch failed"，
+// 超时=AbortError "This operation was aborted"，此外兜底常见 socket 错误码。
+function isNetDown(msg) {
+  return /fetch failed|abort|ECONNREFUSED|ENOTFOUND|ECONNRESET|EPIPE|ETIMEDOUT|network/i.test(String(msg || ''));
+}
+
+// 语义召回：query=当前用户消息；返回 ≤k 条干净文本（全部失败→[]）。
+// searchMemories（v0.6.3，deep_memory 工具用）是带状态版：recall 保持旧签名/旧行为包裹它。
+async function searchMemories(query, bank, k) {
   const cfg = config();
-  if (!cfg.enabled) return [];
+  if (!cfg.enabled) return { ok: false, error: '深层记忆未启用（hindsight.enabled=false）', items: [] };
   try {
     const r = await rawFetch(
-      `${cfg.apiUrl}/v1/default/banks/${cfg.bank}/memories/recall`,
+      `${cfg.apiUrl}/v1/default/banks/${encodeURIComponent(bank || cfg.bank)}/memories/recall`,
       { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: String(query || '') }) },
       cfg.recallTimeoutMs || 1200,
     );
@@ -90,12 +98,16 @@ async function recall(query, k) {
       if (out.length >= (k || cfg.recallK || 6)) break;
     }
     failCount = 0; lastOkAt = new Date().toISOString();
-    return out;
+    return { ok: true, items: out };
   } catch (e) {
     failCount++; lastFailAt = new Date().toISOString();
     if (failCount <= 3 || failCount % 20 === 0) logger.warn('[hindsight] recall 失败(×' + failCount + '): ' + e.message);
-    return [];
+    return { ok: false, error: e.message, down: isNetDown(e.message), items: [] };
   }
+}
+
+async function recall(query, k) {
+  return (await searchMemories(query, null, k)).items;
 }
 
 // 写入（fire-and-forget）。items: [{content, context, metadata}]
@@ -132,6 +144,89 @@ function status() {
   return { failCount, lastFailAt, lastOkAt, config: config() };
 }
 
+// ===== 跨库只读面（v0.6.3，deep_memory 工具）=====
+// 与写入的 bank 硬隔离并行不悖：retain 永远只进 cfg.bank（deskpal-tito）；
+// 本节全部只读。list 走代理 passthrough（代理只拦 recall/retain 两类请求），
+// 所以 sensitive/L1 过滤在本地补齐——与 recall 路径同标准，不许因为换了端点就漏筛。
+function readBanks() {
+  const cfg = config();
+  const list = Array.isArray(cfg.readBanks) && cfg.readBanks.length
+    ? cfg.readBanks.filter(Boolean)
+    : [cfg.bank];
+  return [...new Set(list)];
+}
+
+// 代理健康全量信息（proxy/upstream/l2/stats）；不可达返回 null
+async function health() {
+  try {
+    const r = await rawFetch(config().apiUrl + '/__proxy/health', {}, 1500);
+    return r.ok && r.json ? r.json : null;
+  } catch (_) { return null; }
+}
+
+// 库清单（id/条数/最后写入时间）
+async function listBanks() {
+  const cfg = config();
+  if (!cfg.enabled) return { ok: false, error: '深层记忆未启用（hindsight.enabled=false）', banks: [] };
+  try {
+    const r = await rawFetch(`${cfg.apiUrl}/v1/default/banks?limit=100`, {}, 4000);
+    if (!r.ok || !r.json || !Array.isArray(r.json.banks)) throw new Error('banks HTTP ' + r.status);
+    failCount = 0; lastOkAt = new Date().toISOString();
+    return {
+      ok: true,
+      banks: r.json.banks.map(b => ({
+        id: b.bank_id || b.name,
+        factCount: b.fact_count != null ? b.fact_count : null,
+        lastWriteAt: b.last_write_at || b.updated_at || null,
+      })),
+    };
+  } catch (e) {
+    failCount++; lastFailAt = new Date().toISOString();
+    if (failCount <= 3 || failCount % 20 === 0) logger.warn('[hindsight] listBanks 失败(×' + failCount + '): ' + e.message);
+    return { ok: false, error: e.message, down: isNetDown(e.message), banks: [] };
+  }
+}
+
+// 单条列表项的净化：state!=valid、L2 敏感标记、本地 L1 黑名单三道全过才放行
+function sanitizeEntry(item) {
+  if (!item || (item.state && item.state !== 'valid')) return null;
+  const meta = item.metadata || {};
+  if (String(meta.sensitive) === 'true') return null;
+  const text = String(item.text || '').trim();
+  if (!text) return null;
+  const f = localFilter(text);
+  if (!f.clean) { logger.warn('[hindsight] 本地 L1 拦截列表条目(' + f.hits.join(',') + '): ' + text.slice(0, 40)); return null; }
+  const attr = meta.attribution;
+  return {
+    text: (attr === 'unknown' ? '（归属未定）' : '') + text,
+    attribution: attr || null,
+    factType: item.fact_type || null,
+    // 展示时间取事件发生期，缺省回落到提及/入库时间
+    at: item.occurred_start || item.date || item.mentioned_at || item.updated_at || null,
+  };
+}
+
+// 某库最近条目（按 updated_at 倒序，服务端排序）。多取一倍再净化截断，
+// 保证 sensitive/L1 被滤掉后仍能凑满 limit 条干净条目。
+async function listMemories(bank, limit) {
+  const cfg = config();
+  if (!cfg.enabled) return { ok: false, error: '深层记忆未启用（hindsight.enabled=false）', items: [] };
+  const n = Math.min(10, Math.max(1, Math.round(+limit) || 5));
+  try {
+    const r = await rawFetch(
+      `${cfg.apiUrl}/v1/default/banks/${encodeURIComponent(bank)}/memories/list?time_field=updated_at&state=valid&limit=${n * 2}`,
+      {}, 5000,
+    );
+    if (!r.ok || !r.json || !Array.isArray(r.json.items)) throw new Error('list HTTP ' + r.status);
+    failCount = 0; lastOkAt = new Date().toISOString();
+    return { ok: true, items: r.json.items.map(sanitizeEntry).filter(Boolean).slice(0, n) };
+  } catch (e) {
+    failCount++; lastFailAt = new Date().toISOString();
+    if (failCount <= 3 || failCount % 20 === 0) logger.warn('[hindsight] list 失败(×' + failCount + '): ' + e.message);
+    return { ok: false, error: e.message, down: isNetDown(e.message), items: [] };
+  }
+}
+
 // 启动询问链路（main.js 调用）：返回需要执行的提示动作，Electron API 留在 main 侧
 async function startupCheck() {
   const cfg = config();
@@ -140,4 +235,4 @@ async function startupCheck() {
   return { prompt: !up, cfg };
 }
 
-module.exports = { config, isUp, recall, retain, localFilter, status, startupCheck };
+module.exports = { config, isUp, recall, retain, localFilter, status, startupCheck, readBanks, health, listBanks, listMemories, searchMemories };
